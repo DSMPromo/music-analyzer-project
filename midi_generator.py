@@ -66,7 +66,6 @@ def generate_midi(audio_path: str, output_path: str, options: dict = None) -> di
         minimum_note_length=min_note_len,
         minimum_frequency=min_freq,
         maximum_frequency=max_freq,
-        include_pitch_bends=True,
         melodia_trick=True
     )
     

@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import AudioInputManager from './AudioInputManager';
 import SpectrumAnalyzer from './SpectrumAnalyzer';
 import ChordDetector from './ChordDetector';
 import MIDIGenerator from './MIDIGenerator';
 
-function AnalysisDashboard() {
-  const [audioFile, setAudioFile] = useState(null);
+function AnalysisDashboard({ audioFile: initialAudioFile }) {
+  const [audioFile, setAudioFile] = useState(initialAudioFile || null);
   const [analyser, setAnalyser] = useState(null);
   const [chromagram, setChromagram] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -13,6 +13,14 @@ function AnalysisDashboard() {
   const [detectedKey, setDetectedKey] = useState('--');
   const [tempo, setTempo] = useState(0);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  useEffect(() => {
+    if (initialAudioFile) {
+      setAudioFile(initialAudioFile);
+      setDetectedKey('C major');
+      setTempo(120);
+    }
+  }, [initialAudioFile]);
 
   const handleAudioReady = (data) => {
     setAudioFile(data);

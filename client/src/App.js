@@ -35,8 +35,8 @@ function App() {
       <main className="App-main">
         <section className="input-section">
           <AudioInputManager
-            onFileSelect={handleAudioSelect}
-            onRecordingComplete={handleAudioSelect}
+            onAudioReady={handleAudioSelect}
+            onStreamReady={handleAudioSelect}
           />
         </section>
 

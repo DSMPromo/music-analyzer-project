@@ -286,23 +286,26 @@ export function dbToColorIndex(db) {
  * @returns {number[]} Array of FFT bin indices for each display row
  */
 export function buildLogFrequencyScale(numRows, fftSize, sampleRate, minFreq = DEFAULT_MIN_FREQ, maxFreq = DEFAULT_MAX_FREQ) {
+  // Ensure valid numRows
+  const safeNumRows = Math.max(1, Math.floor(numRows) || 1);
   const binCount = fftSize / 2;
   const freqPerBin = sampleRate / fftSize;
   const logMinFreq = Math.log10(minFreq);
   const logMaxFreq = Math.log10(maxFreq);
   const logRange = logMaxFreq - logMinFreq;
 
-  const scale = new Array(numRows);
+  const scale = new Array(safeNumRows);
 
-  for (let row = 0; row < numRows; row++) {
+  for (let row = 0; row < safeNumRows; row++) {
     // Map row to frequency (bottom = low freq, top = high freq)
-    const ratio = row / (numRows - 1);
+    // Handle single row case to avoid division by zero
+    const ratio = safeNumRows > 1 ? row / (safeNumRows - 1) : 0.5;
     const logFreq = logMinFreq + ratio * logRange;
     const freq = Math.pow(10, logFreq);
 
     // Convert frequency to FFT bin index
     const bin = Math.round(freq / freqPerBin);
-    scale[row] = Math.min(bin, binCount - 1);
+    scale[row] = Math.min(Math.max(0, bin), binCount - 1);
   }
 
   return scale;
@@ -435,9 +438,37 @@ export function computeSpectrogram(audioData, sampleRate, options = {}) {
   } = options;
 
   const numSamples = audioData.length;
-  const numFrames = Math.floor((numSamples - fftSize) / hopSize) + 1;
   const numBins = fftSize / 2;
   const duration = numSamples / sampleRate;
+
+  // Handle case where audio is shorter than FFT size
+  if (numSamples < fftSize) {
+    // Pad with zeros or return minimal spectrogram
+    const paddedData = new Float32Array(fftSize);
+    paddedData.set(audioData);
+    const window = windowFn(fftSize);
+    const frameData = new Float32Array(fftSize);
+    for (let i = 0; i < fftSize; i++) {
+      frameData[i] = paddedData[i] * window[i];
+    }
+    const fftResult = fft(frameData);
+    const magnitudes = fftMagnitude(fftResult);
+    const dbData = new Float32Array(numBins);
+    for (let i = 0; i < numBins; i++) {
+      dbData[i] = magnitudeToDb(magnitudes[i]);
+    }
+    return {
+      data: [dbData],
+      numFrames: 1,
+      numBins,
+      duration,
+      sampleRate,
+      fftSize,
+      hopSize
+    };
+  }
+
+  const numFrames = Math.max(1, Math.floor((numSamples - fftSize) / hopSize) + 1);
 
   // Pre-compute window
   const window = windowFn(fftSize);
@@ -500,25 +531,35 @@ export function renderSpectrogramToImageData(spectrogram, width, height, options
     maxDb = DEFAULT_MAX_DB
   } = options;
 
+  // Validate dimensions
+  const safeWidth = Math.max(1, Math.floor(width) || 1);
+  const safeHeight = Math.max(1, Math.floor(height) || 1);
+
   const { data, numFrames, sampleRate, fftSize } = spectrogram;
   const numBins = fftSize / 2;
 
+  // Handle empty or invalid spectrogram
+  if (!data || data.length === 0 || numFrames <= 0) {
+    const imageData = new ImageData(safeWidth, safeHeight);
+    return imageData;
+  }
+
   // Build lookup tables
   const lut = buildColorLUT();
-  const freqScale = buildLogFrequencyScale(height, fftSize, sampleRate, minFreq, maxFreq);
+  const freqScale = buildLogFrequencyScale(safeHeight, fftSize, sampleRate, minFreq, maxFreq);
 
   // Create ImageData
-  const imageData = new ImageData(width, height);
+  const imageData = new ImageData(safeWidth, safeHeight);
   const pixels = imageData.data;
 
   // Render each pixel
-  for (let y = 0; y < height; y++) {
+  for (let y = 0; y < safeHeight; y++) {
     // Get FFT bin for this row (inverted: top = high freq)
-    const bin = freqScale[height - 1 - y];
+    const bin = freqScale[safeHeight - 1 - y];
 
-    for (let x = 0; x < width; x++) {
+    for (let x = 0; x < safeWidth; x++) {
       // Get frame index for this column
-      const frameIdx = Math.floor((x / width) * numFrames);
+      const frameIdx = Math.floor((x / safeWidth) * numFrames);
       const frame = data[Math.min(frameIdx, numFrames - 1)];
 
       // Get dB value and map to color
@@ -526,7 +567,7 @@ export function renderSpectrogramToImageData(spectrogram, width, height, options
       const colorIdx = dbToColorIndex(db);
 
       // Set pixel color from LUT
-      const pixelIdx = (y * width + x) * 4;
+      const pixelIdx = (y * safeWidth + x) * 4;
       pixels[pixelIdx] = lut[colorIdx * 4];
       pixels[pixelIdx + 1] = lut[colorIdx * 4 + 1];
       pixels[pixelIdx + 2] = lut[colorIdx * 4 + 2];

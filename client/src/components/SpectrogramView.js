@@ -48,11 +48,11 @@ function SpectrogramView({
     clearSpectrogram
   } = useSpectrogramGenerator();
 
-  // Calculate dimensions
+  // Calculate dimensions with safe minimums
   const AXIS_LEFT_PADDING = 50;
   const AXIS_BOTTOM_PADDING = 25;
-  const spectrogramWidth = containerWidth - AXIS_LEFT_PADDING;
-  const spectrogramHeight = height - AXIS_BOTTOM_PADDING;
+  const spectrogramWidth = Math.max(100, containerWidth - AXIS_LEFT_PADDING);
+  const spectrogramHeight = Math.max(100, height - AXIS_BOTTOM_PADDING);
 
   // Frequency and time labels
   const frequencyLabels = useMemo(() =>

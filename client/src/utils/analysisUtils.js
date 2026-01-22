@@ -92,26 +92,43 @@ export const calculateDynamicRange = (peakDb, rmsDb) => {
 
 /**
  * Detect clipping in audio buffer
+ * Distinguishes between actual clipping (flat-topped waveforms) and limiting
  * @param {Float32Array} buffer - Audio sample buffer
- * @param {number} threshold - Clipping threshold (default 0.99)
+ * @param {number} threshold - Clipping threshold (default 0.9999 - true digital max)
  * @returns {Object} Clipping info with count and positions
  */
-export const detectClipping = (buffer, threshold = 0.99) => {
+export const detectClipping = (buffer, threshold = 0.9999) => {
   const clips = [];
   let clipCount = 0;
-  let inClip = false;
+  let consecutiveCount = 0;
+  let clipStart = -1;
+
+  // Only count as clipping if we have 8+ consecutive samples at absolute max
+  // At 44.1kHz, 8 samples = ~0.18ms - longer than limiter attack times
+  // True hard clipping creates flat sections lasting several samples
+  // Professional limiters don't create flat sections, just fast curves
+  const minConsecutive = 8;
 
   for (let i = 0; i < buffer.length; i++) {
     const abs = Math.abs(buffer[i]);
     if (abs >= threshold) {
-      if (!inClip) {
-        clips.push(i);
-        inClip = true;
+      if (consecutiveCount === 0) {
+        clipStart = i;
       }
-      clipCount++;
+      consecutiveCount++;
     } else {
-      inClip = false;
+      if (consecutiveCount >= minConsecutive) {
+        clips.push(clipStart);
+        clipCount++;
+      }
+      consecutiveCount = 0;
     }
+  }
+
+  // Check end of buffer
+  if (consecutiveCount >= minConsecutive) {
+    clips.push(clipStart);
+    clipCount++;
   }
 
   return { count: clipCount, positions: clips.slice(0, 100) };
@@ -133,6 +150,7 @@ export const calculateDCOffset = (buffer) => {
 /**
  * Estimate Signal-to-Noise Ratio
  * Uses quiet sections as noise floor estimation
+ * For mastered tracks without true silence, estimates based on dynamic range
  * @param {Float32Array} buffer - Audio sample buffer
  * @param {number} sampleRate - Sample rate
  * @returns {number} Estimated SNR in dB
@@ -154,20 +172,42 @@ export const estimateSNR = (buffer, sampleRate) => {
     windowRMS.push(Math.sqrt(sum / windowSize));
   }
 
-  // Sort to find quiet sections (noise floor)
-  windowRMS.sort((a, b) => a - b);
+  // Sort to find quiet and loud sections
+  const sortedRMS = [...windowRMS].sort((a, b) => a - b);
 
-  // Use bottom 10% as noise floor estimate
-  const noiseFloorIdx = Math.max(0, Math.floor(numWindows * 0.1));
-  const noiseFloor = windowRMS[noiseFloorIdx] || 0.0001;
+  // Use bottom 5% as noise floor estimate
+  const noiseFloorIdx = Math.max(0, Math.floor(numWindows * 0.05));
+  const noiseFloor = sortedRMS[noiseFloorIdx] || 0.0001;
 
   // Use top 10% as signal level
   const signalIdx = Math.floor(numWindows * 0.9);
-  const signalLevel = windowRMS[signalIdx] || noiseFloor;
+  const signalLevel = sortedRMS[signalIdx] || noiseFloor;
 
-  if (noiseFloor <= 0) return 80; // Very clean signal
+  // Calculate the ratio of quiet to loud sections
+  const quietLoudRatio = signalLevel / noiseFloor;
 
-  return linearToDb(signalLevel / noiseFloor);
+  // If dynamic range between quiet and loud parts is small (<20dB),
+  // this is likely a mastered track - estimate SNR based on bit depth/format
+  // rather than content
+  if (quietLoudRatio < 10) { // Less than 20dB dynamic range
+    // Assume professional mastered track with typical 16-bit+ SNR
+    // The actual noise floor is below the quietest musical content
+    return 70; // Typical for well-mastered 16-bit audio
+  }
+
+  // If we have true quiet sections (likely silence or near-silence)
+  if (noiseFloor < 0.001) { // Below -60dB
+    // This is actual noise floor
+    if (noiseFloor <= 0) return 96; // Very clean (24-bit level)
+    return Math.min(96, linearToDb(signalLevel / noiseFloor));
+  }
+
+  // For tracks with moderate dynamic range, scale appropriately
+  const rawSNR = linearToDb(quietLoudRatio);
+
+  // The measured "noise floor" is actually quiet music, not noise
+  // Add an offset to account for this (real noise is ~20-30dB below quiet music)
+  return Math.min(96, rawSNR + 30);
 };
 
 /**
@@ -515,17 +555,29 @@ export const generateRecommendations = (metrics, platform = 'spotify') => {
   }
 
   // Peak/headroom recommendations
-  if (metrics.peakDb > target.ceiling) {
-    recommendations.push({
-      type: 'peak',
-      status: 'error',
-      message: `Peak exceeds ${target.name} ceiling (${target.ceiling} dBFS). Use a limiter to reduce peaks.`
-    });
-  } else if (metrics.peakDb > target.ceiling - 0.5) {
+  // For loud masters (above target LUFS), peaks near 0dBFS are expected and intentional
+  const isLoudMaster = metrics.lufs > target.lufs - 2;
+
+  if (metrics.peakDb > -0.1) {
+    // True peak at essentially 0dBFS - may cause issues on some playback systems
     recommendations.push({
       type: 'peak',
       status: 'warning',
-      message: 'Peaks very close to ceiling. Consider leaving more headroom.'
+      message: 'True peak very close to 0 dBFS. Some playback systems may clip on decode.'
+    });
+  } else if (metrics.peakDb > target.ceiling && !isLoudMaster) {
+    // Only flag as issue if track isn't already a loud master
+    recommendations.push({
+      type: 'peak',
+      status: 'warning',
+      message: `Peak exceeds ${target.name} ceiling (${target.ceiling} dBFS). Consider leaving more headroom.`
+    });
+  } else if (isLoudMaster && metrics.peakDb > target.ceiling) {
+    // Loud master with peaks above ceiling - this is normal/intentional
+    recommendations.push({
+      type: 'peak',
+      status: 'info',
+      message: `Mastered loud with peaks at ${metrics.peakDb.toFixed(1)} dBFS. ${target.name} will normalize to ${target.lufs} LUFS.`
     });
   } else {
     recommendations.push({

@@ -13,6 +13,7 @@
     "react-dom": "^19.2.3",
     "react-scripts": "^5.0.1",
     "tonal": "^6.4.3",
+    "wavesurfer.js": "^7.12.1",
     "web-vitals": "^2.1.4"
   },
   "scripts": {

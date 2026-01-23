@@ -672,6 +672,836 @@
   color: #3b82f6;
 }
 
+/* ===== Diagram Grid Layout (Circle of Fifths + Rhythm Grid) ===== */
+.diagram-grid {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .diagram-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ===== Rhythm Grid Component ===== */
+.rhythm-grid {
+  background: #1a1a2e;
+  border-radius: 8px;
+  padding: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  min-width: 400px;
+}
+
+.rhythm-grid-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.rhythm-grid-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #fff;
+}
+
+.rhythm-grid-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.auto-scroll-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle-switch-mini {
+  width: 28px;
+  height: 16px;
+  background: #555;
+  border-radius: 8px;
+  position: relative;
+  transition: background 0.2s;
+  cursor: pointer;
+}
+
+.toggle-switch-mini.on {
+  background: #10b981;
+}
+
+.toggle-slider-mini {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.toggle-switch-mini.on .toggle-slider-mini {
+  transform: translateX(12px);
+}
+
+.toggle-label-mini {
+  font-size: 0.65rem;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.toggle-switch-mini.on + .toggle-label-mini {
+  color: #10b981;
+}
+
+.tempo-display {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.tempo-value {
+  font-size: 0.9rem;
+  color: #fff;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  transition: background 0.2s;
+}
+
+.tempo-value:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.tempo-input {
+  width: 60px;
+  background: #2a2a2a;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  color: white;
+  text-align: center;
+  padding: 0.25rem;
+  font-size: 0.85rem;
+}
+
+.tempo-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.tap-tempo-btn {
+  padding: 0.25rem 0.5rem;
+  background: #3b82f6;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  color: white;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.tap-tempo-btn:hover {
+  background: #2563eb;
+}
+
+.tap-tempo-btn.active {
+  transform: scale(0.95);
+  background: #1d4ed8;
+}
+
+.tempo-confidence {
+  width: 40px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.tempo-confidence .confidence-bar {
+  height: 100%;
+  background: #10b981;
+  transition: width 0.3s;
+}
+
+.pattern-display {
+  display: flex;
+  align-items: center;
+}
+
+.pattern-badge {
+  padding: 0.25rem 0.5rem;
+  background: rgba(59, 130, 246, 0.2);
+  border-radius: 4px;
+  font-size: 0.75rem;
+  color: #3b82f6;
+  font-weight: 500;
+}
+
+/* Rhythm Grid Content */
+.rhythm-grid-content {
+  position: relative;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+
+.grid-row {
+  display: flex;
+  align-items: center;
+}
+
+.grid-row.header-row {
+  margin-bottom: 4px;
+}
+
+.beat-header {
+  display: flex;
+  gap: 1px;
+}
+
+.beat-header-cell {
+  width: 20px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  color: #666;
+}
+
+.beat-header-cell.beat-start {
+  color: #aaa;
+  font-weight: 600;
+}
+
+.beat-header-cell.bar-start {
+  margin-left: 4px;
+  color: #fff;
+}
+
+.beat-header-cell.current {
+  color: #e94560;
+}
+
+/* Drum Rows */
+.drum-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 2px;
+}
+
+.drum-label {
+  width: 60px;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  color: #aaa;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.drum-label:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.drum-label .spacer {
+  width: 60px;
+}
+
+.drum-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.drum-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Beat Cells */
+.beat-cells {
+  display: flex;
+  gap: 1px;
+}
+
+.beat-cell {
+  width: 20px;
+  height: 20px;
+  background: #2a2a2a;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.beat-cell:hover {
+  background: #3a3a3a;
+}
+
+.beat-cell.bar-start {
+  margin-left: 4px;
+}
+
+.beat-cell.beat-start {
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.beat-cell.current {
+  background: rgba(233, 69, 96, 0.2);
+}
+
+/* Hit Markers */
+.hit-marker {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  transition: transform 0.1s;
+}
+
+.hit-marker:hover {
+  transform: scale(1.2);
+}
+
+.hit-marker.detected {
+  /* Colors set by drum type class */
+}
+
+.hit-marker.manual {
+  background: transparent !important;
+  border: 2px solid;
+}
+
+/* Drum Type Colors */
+.hit-marker.drum-kick {
+  background: #e94560;
+  border-color: #e94560;
+}
+
+.hit-marker.drum-snare {
+  background: #3b82f6;
+  border-color: #3b82f6;
+}
+
+.hit-marker.drum-hihat {
+  background: #f59e0b;
+  border-color: #f59e0b;
+}
+
+.hit-marker.drum-clap {
+  background: #10b981;
+  border-color: #10b981;
+}
+
+.hit-marker.drum-tom {
+  background: #8b5cf6;
+  border-color: #8b5cf6;
+}
+
+.hit-marker.drum-perc {
+  background: #ec4899;
+  border-color: #ec4899;
+}
+
+/* Playhead */
+.rhythm-playhead {
+  position: absolute;
+  width: 2px;
+  top: 20px;
+  bottom: 0;
+  background: #e94560;
+  pointer-events: none;
+  z-index: 10;
+  box-shadow: 0 0 4px rgba(233, 69, 96, 0.5);
+}
+
+/* Rhythm Grid Footer */
+.rhythm-grid-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.grid-legend {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.7rem;
+  color: #888;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.legend-marker {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.legend-marker.detected {
+  background: #3b82f6;
+}
+
+.legend-marker.manual {
+  background: transparent;
+  border: 2px solid #3b82f6;
+}
+
+.legend-playhead {
+  width: 2px;
+  height: 12px;
+  background: #e94560;
+  border-radius: 1px;
+}
+
+.clear-all-btn {
+  padding: 0.25rem 0.5rem;
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 4px;
+  font-size: 0.7rem;
+  color: #ef4444;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.clear-all-btn:hover {
+  background: rgba(239, 68, 68, 0.3);
+  border-color: rgba(239, 68, 68, 0.6);
+}
+
+/* Rhythm Grid Actions (Export, Clear) */
+.rhythm-grid-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* MIDI Mode Toggle (Piano Roll) */
+.midi-mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  font-size: 0.7rem;
+  color: #888;
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.midi-mode-toggle:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.midi-mode-toggle input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: #8b5cf6;
+  cursor: pointer;
+}
+
+.midi-mode-toggle .toggle-label {
+  white-space: nowrap;
+}
+
+/* Export MIDI Button */
+.export-midi-btn {
+  padding: 0.25rem 0.5rem;
+  background: rgba(16, 185, 129, 0.2);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  border-radius: 4px;
+  font-size: 0.7rem;
+  color: #10b981;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.export-midi-btn:hover:not(:disabled) {
+  background: rgba(16, 185, 129, 0.3);
+  border-color: rgba(16, 185, 129, 0.6);
+}
+
+.export-midi-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* MIDI Mapping Info Panel */
+.midi-mapping-info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: rgba(139, 92, 246, 0.1);
+  border: 1px solid rgba(139, 92, 246, 0.2);
+  border-radius: 4px;
+  font-size: 0.65rem;
+  color: #aaa;
+}
+
+.midi-mapping-info .mapping-title {
+  color: #8b5cf6;
+  font-weight: 600;
+  margin-right: 0.25rem;
+}
+
+.midi-mapping-info .mapping-item {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0.15rem 0.35rem;
+  border-radius: 3px;
+}
+
+.drum-dot-small {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ===== Analysis History Panel ===== */
+.analysis-history {
+  background: #1a1a2e;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  margin-bottom: 1rem;
+  overflow: hidden;
+}
+
+.analysis-history.empty {
+  padding: 1rem;
+}
+
+.history-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s;
+}
+
+.history-header:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.history-icon {
+  font-size: 1rem;
+}
+
+.history-title {
+  flex: 1;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.history-toggle {
+  color: #666;
+  font-size: 0.7rem;
+}
+
+.history-empty-text {
+  color: #666;
+  font-size: 0.8rem;
+  margin: 0;
+}
+
+.history-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.history-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.history-item.current {
+  background: rgba(59, 130, 246, 0.15);
+  border-left: 3px solid #3b82f6;
+}
+
+.history-item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.history-item-name {
+  font-size: 0.85rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 0.25rem;
+}
+
+.history-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  font-size: 0.7rem;
+  color: #888;
+}
+
+.history-item-meta span {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+}
+
+.meta-key {
+  color: #f59e0b !important;
+  background: rgba(245, 158, 11, 0.15) !important;
+}
+
+.meta-tempo {
+  color: #10b981 !important;
+  background: rgba(16, 185, 129, 0.15) !important;
+}
+
+.meta-pattern {
+  color: #8b5cf6 !important;
+  background: rgba(139, 92, 246, 0.15) !important;
+  font-weight: 600;
+}
+
+.history-item-time {
+  font-size: 0.65rem;
+  color: #555;
+  margin-top: 0.2rem;
+}
+
+.history-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: 0.5rem;
+}
+
+.history-badge {
+  font-size: 0.6rem;
+  font-weight: 600;
+  padding: 0.15rem 0.3rem;
+  border-radius: 3px;
+}
+
+.history-badge.midi {
+  background: rgba(16, 185, 129, 0.2);
+  color: #10b981;
+}
+
+.history-badge.stems {
+  background: rgba(139, 92, 246, 0.2);
+  color: #8b5cf6;
+}
+
+.history-delete-btn {
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: #666;
+  font-size: 1rem;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.history-delete-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+.history-footer {
+  padding: 0.5rem 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.history-clear-btn {
+  width: 100%;
+  padding: 0.4rem;
+  background: transparent;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 4px;
+  color: #888;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.history-clear-btn:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #ef4444;
+}
+
+.history-clear-btn.confirm {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: #ef4444;
+  color: #ef4444;
+  animation: pulse-warning 0.5s ease infinite alternate;
+}
+
+@keyframes pulse-warning {
+  from { opacity: 0.8; }
+  to { opacity: 1; }
+}
+
+/* History scrollbar */
+.history-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.history-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.history-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+}
+
+.history-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* History Controls - Cache Toggle */
+.history-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.cache-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle-label {
+  font-size: 0.75rem;
+  color: #888;
+}
+
+.toggle-switch {
+  width: 36px;
+  height: 20px;
+  background: #444;
+  border-radius: 10px;
+  position: relative;
+  transition: background 0.2s;
+  cursor: pointer;
+}
+
+.toggle-switch.on {
+  background: #10b981;
+}
+
+.toggle-switch.off {
+  background: #555;
+}
+
+.toggle-slider {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.toggle-switch.on .toggle-slider {
+  transform: translateX(16px);
+}
+
+.toggle-status {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: #666;
+  min-width: 24px;
+}
+
+.toggle-switch.on + .toggle-status {
+  color: #10b981;
+}
+
+.reanalyze-btn {
+  padding: 0.3rem 0.6rem;
+  background: transparent;
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  border-radius: 4px;
+  color: #3b82f6;
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.reanalyze-btn:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: #3b82f6;
+}
+
+.reanalyze-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Playback Controls */
 .playback-controls {
   display: flex;

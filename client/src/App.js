@@ -11,10 +11,14 @@ import LoudnessTimeline from './components/LoudnessTimeline';
 import ReferenceCompare from './components/ReferenceCompare';
 import GeminiMixAnalyzer from './components/GeminiMixAnalyzer';
 import StemSeparator from './components/StemSeparator';
+import AnalysisHistory from './components/AnalysisHistory';
 import { useAudioContext } from './hooks/useAudioContext';
 import { useFFTAnalysis } from './hooks/useFFTAnalysis';
 import { useSpectrogramGenerator } from './hooks/useSpectrogramGenerator';
 import { useMixAnalysis } from './hooks/useMixAnalysis';
+import { useDrumDetection } from './hooks/useDrumDetection';
+import { useAnalysisCache } from './hooks/useAnalysisCache';
+import { generateFileFingerprint } from './utils/analysisCache';
 
 function App() {
   const [audioFile, setAudioFile] = useState(null);
@@ -61,6 +65,7 @@ function App() {
     getProblemMarkers
   } = useMixAnalysis();
   const {
+    frequencyData,
     chromagram,
     chromagramByOctave,
     peakFrequency,
@@ -70,7 +75,43 @@ function App() {
     isAnalyzing
   } = useFFTAnalysis();
 
-  const handleAudioSelect = async (file) => {
+  // Drum detection hook
+  const {
+    drumHits,
+    tempo: drumTempo,
+    tempoConfidence: drumTempoConfidence,
+    detectedPattern,
+    patternConfidence,
+    analyzeFrame: analyzeDrumFrame,
+    startAnalysis: startDrumAnalysis,
+    stopAnalysis: stopDrumAnalysis,
+    resetAnalysis: resetDrumAnalysis,
+    updatePlaybackPosition,
+    addHit: addDrumHit,
+    removeHit: removeDrumHit,
+    clearRow: clearDrumRow,
+    clearAll: clearAllDrums,
+    setTempo: setDrumTempo,
+    tapTempo,
+  } = useDrumDetection(estimatedTempo || 120);
+
+  // Analysis cache hook
+  const {
+    history: analysisHistory,
+    isLoading: isCacheLoading,
+    currentCacheId,
+    checkCache,
+    cacheAnalysis,
+    loadFromHistory,
+    deleteFromHistory,
+    clearHistory,
+    updateCache,
+  } = useAnalysisCache();
+
+  const [loadedFromCache, setLoadedFromCache] = useState(false);
+  const [cacheEnabled, setCacheEnabled] = useState(true);
+
+  const handleAudioSelect = async (file, forceReanalyze = false) => {
     setAudioFile(file);
 
     // Create object URL for audio playback
@@ -83,6 +124,41 @@ function App() {
     // Reset state
     setIsPlaying(false);
     setCurrentTime(0);
+    setLoadedFromCache(false);
+
+    // First, decode audio to get duration for cache lookup
+    let decodedBuffer = null;
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      const tempContext = new AudioContextClass({ sampleRate: 44100 });
+      const arrayBuffer = await file.arrayBuffer();
+      decodedBuffer = await tempContext.decodeAudioData(arrayBuffer);
+      await tempContext.close();
+    } catch (err) {
+      console.error('Error decoding audio:', err);
+    }
+
+    // Check cache for this file (if cache enabled and not forcing reanalyze)
+    if (decodedBuffer && cacheEnabled && !forceReanalyze) {
+      const cachedData = await checkCache(file, decodedBuffer.duration);
+
+      if (cachedData && cachedData.detectedKey) {
+        // Found in cache! Restore cached analysis data
+        console.log('Loading from cache:', file.name);
+        setLoadedFromCache(true);
+
+        // Restore cached values (skip heavy key/tempo detection)
+        if (cachedData.detectedKey) setDetectedKey(cachedData.detectedKey);
+        if (cachedData.tempo) setEstimatedTempo(cachedData.tempo);
+
+        // Still need to set audioBuffer for spectrogram generation
+        setAudioBuffer(decodedBuffer);
+        return;
+      }
+    }
+
+    // Not in cache - do full processing
+    console.log('Processing new file:', file.name);
     setDetectedKey(null);
     setEstimatedTempo(null);
     setStaticPeakFreq(null);
@@ -90,16 +166,15 @@ function App() {
     setAiSuggestions([]);
     clearSpectrogram();
 
-    // Decode audio for spectrogram
-    try {
-      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      const tempContext = new AudioContextClass({ sampleRate: 44100 });
-      const arrayBuffer = await file.arrayBuffer();
-      const decodedBuffer = await tempContext.decodeAudioData(arrayBuffer);
+    if (decodedBuffer) {
       setAudioBuffer(decodedBuffer);
-      await tempContext.close();
-    } catch (err) {
-      console.error('Error decoding audio for spectrogram:', err);
+    }
+  };
+
+  // Re-analyze current file (bypass cache)
+  const handleReanalyze = () => {
+    if (audioFile) {
+      handleAudioSelect(audioFile, true);
     }
   };
 
@@ -125,6 +200,9 @@ function App() {
       startAnalysis(currentAnalyser);
     }
 
+    // Start drum analysis
+    startDrumAnalysis();
+
     audioRef.current.play();
     setIsPlaying(true);
   };
@@ -133,6 +211,8 @@ function App() {
     if (audioRef.current) {
       audioRef.current.pause();
       setIsPlaying(false);
+      // Stop drum analysis when pausing
+      stopDrumAnalysis();
     }
   };
 
@@ -176,9 +256,31 @@ function App() {
     }
   }, [spectrogramData, audioBuffer, mixAnalysisResults, analyzeMix]);
 
+  // Analyze drums from FFT data when playing
+  useEffect(() => {
+    if (isPlaying && frequencyData && frequencyData.length > 0) {
+      const currentTimeMs = currentTime * 1000;
+      analyzeDrumFrame(new Uint8Array(frequencyData), currentTimeMs);
+      updatePlaybackPosition(currentTimeMs);
+    }
+  }, [isPlaying, frequencyData, currentTime, analyzeDrumFrame, updatePlaybackPosition]);
+
+  // Reset drum analysis when audio file changes
+  useEffect(() => {
+    if (audioFile) {
+      resetDrumAnalysis();
+    }
+  }, [audioFile, resetDrumAnalysis]);
+
   // Analyze key and tempo from full audio buffer when loaded (lightweight version)
   useEffect(() => {
     if (!audioBuffer) return;
+
+    // Skip heavy key/tempo detection if loaded from cache
+    if (loadedFromCache) {
+      console.log('Skipping key/tempo detection - loaded from cache');
+      return;
+    }
 
     // Use setTimeout to avoid blocking UI during load
     const timeoutId = setTimeout(() => {
@@ -342,7 +444,50 @@ function App() {
     }, 100); // Small delay to let UI render first
 
     return () => clearTimeout(timeoutId);
-  }, [audioBuffer]);
+  }, [audioBuffer, loadedFromCache]);
+
+  // Save analysis to cache when key data is available
+  useEffect(() => {
+    if (!audioFile || !duration || loadedFromCache) return;
+
+    // Wait until we have essential analysis data
+    if (!detectedKey && !estimatedTempo && !spectrogramData) return;
+
+    const saveToCache = async () => {
+      const analysisData = {
+        duration,
+        detectedKey,
+        tempo: drumTempo || estimatedTempo,
+        detectedPattern,
+        drumHits,
+        spectrogramData: spectrogramData ? true : null, // Don't store actual spectrogram, just flag
+        hasMidi: Object.values(drumHits || {}).some(hits => hits.length > 0),
+        hasStems: false, // Will be updated when stems are processed
+      };
+
+      await cacheAnalysis(audioFile, analysisData);
+    };
+
+    // Debounce saving to avoid too many writes
+    const timeoutId = setTimeout(saveToCache, 2000);
+    return () => clearTimeout(timeoutId);
+  }, [audioFile, duration, detectedKey, estimatedTempo, drumTempo, detectedPattern, drumHits, spectrogramData, loadedFromCache, cacheAnalysis]);
+
+  // Handle loading analysis from history
+  const handleLoadFromHistory = useCallback(async (entry) => {
+    // Load the cached analysis data
+    const cachedData = await loadFromHistory(entry.id);
+    if (!cachedData) return;
+
+    // Apply cached data
+    setLoadedFromCache(true);
+    if (cachedData.detectedKey) setDetectedKey(cachedData.detectedKey);
+    if (cachedData.tempo) setEstimatedTempo(cachedData.tempo);
+
+    // Note: We can't restore the actual audio file from cache
+    // The user needs to re-select the file, but analysis will be faster
+    alert(`Loaded analysis for "${entry.fileName}"\n\nKey: ${cachedData.detectedKey || 'Unknown'}\nTempo: ${cachedData.tempo || 'Unknown'} BPM\nPattern: ${cachedData.detectedPattern || 'Unknown'}\n\nTo play the audio, please select the file again.`);
+  }, [loadFromHistory]);
 
   // Handle reference track loading
   const handleLoadReference = useCallback(async (file) => {
@@ -407,6 +552,20 @@ function App() {
           <AudioInputManager
             onAudioReady={handleAudioSelect}
             onStreamReady={handleAudioSelect}
+          />
+
+          {/* Analysis History Panel */}
+          <AnalysisHistory
+            history={analysisHistory}
+            currentCacheId={currentCacheId}
+            onLoadAnalysis={handleLoadFromHistory}
+            onDeleteAnalysis={deleteFromHistory}
+            onClearAll={clearHistory}
+            isLoading={isCacheLoading}
+            cacheEnabled={cacheEnabled}
+            onToggleCache={setCacheEnabled}
+            onReanalyze={handleReanalyze}
+            currentFileName={audioFile?.name}
           />
         </section>
 
@@ -529,6 +688,30 @@ function App() {
             showDiagram={true}
             detectedKey={detectedKey}
             tempo={estimatedTempo}
+            // Drum detection props
+            drumHits={drumHits}
+            drumTempo={drumTempo}
+            drumTempoConfidence={drumTempoConfidence}
+            detectedPattern={detectedPattern}
+            patternConfidence={patternConfidence}
+            isPlaying={isPlaying}
+            currentTimeMs={currentTime * 1000}
+            onDrumCellClick={(drumType, bar, beat, subBeat) => {
+              // Toggle hit - if exists, remove; if not, add
+              const hit = drumHits[drumType]?.find(h => {
+                const targetTime = (bar * 4 + beat + subBeat / 4) * (60000 / drumTempo);
+                return Math.abs(h.timestamp - targetTime) < 50;
+              });
+              if (hit) {
+                removeDrumHit(drumType, hit.timestamp, hit.isManual);
+              } else {
+                addDrumHit(drumType, bar, beat, subBeat);
+              }
+            }}
+            onDrumClearRow={clearDrumRow}
+            onDrumClearAll={clearAllDrums}
+            onDrumTempoChange={setDrumTempo}
+            onDrumTapTempo={tapTempo}
           />
         </section>
 

@@ -9,6 +9,8 @@ import SpectrogramView from './components/SpectrogramView';
 import MixAnalysisPanel from './components/MixAnalysisPanel';
 import LoudnessTimeline from './components/LoudnessTimeline';
 import ReferenceCompare from './components/ReferenceCompare';
+import GeminiMixAnalyzer from './components/GeminiMixAnalyzer';
+import StemSeparator from './components/StemSeparator';
 import { useAudioContext } from './hooks/useAudioContext';
 import { useFFTAnalysis } from './hooks/useFFTAnalysis';
 import { useSpectrogramGenerator } from './hooks/useSpectrogramGenerator';
@@ -22,6 +24,8 @@ function App() {
   const [duration, setDuration] = useState(0);
   const [detectedKey, setDetectedKey] = useState(null);
   const [estimatedTempo, setEstimatedTempo] = useState(null);
+  const [staticPeakFreq, setStaticPeakFreq] = useState(null);
+  const [staticRmsLevel, setStaticRmsLevel] = useState(null);
   const [aiSuggestions, setAiSuggestions] = useState([]);
   const [aiQuery, setAiQuery] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -58,6 +62,7 @@ function App() {
   } = useMixAnalysis();
   const {
     chromagram,
+    chromagramByOctave,
     peakFrequency,
     rmsLevel,
     startAnalysis,
@@ -80,6 +85,8 @@ function App() {
     setCurrentTime(0);
     setDetectedKey(null);
     setEstimatedTempo(null);
+    setStaticPeakFreq(null);
+    setStaticRmsLevel(null);
     setAiSuggestions([]);
     clearSpectrogram();
 
@@ -101,8 +108,11 @@ function App() {
 
     // Initialize audio context on first play
     let ctx = audioContext;
+    let currentAnalyser = analyser;
     if (!ctx) {
-      ctx = await initAudio();
+      const result = await initAudio();
+      ctx = result.ctx;
+      currentAnalyser = result.analyser;
     }
 
     // Connect source only once
@@ -110,9 +120,9 @@ function App() {
       sourceRef.current = connectSource(audioRef.current);
     }
 
-    // Start FFT analysis
-    if (analyser && !isAnalyzing) {
-      startAnalysis(analyser);
+    // Start FFT analysis (use currentAnalyser which is guaranteed to be set)
+    if (currentAnalyser && !isAnalyzing) {
+      startAnalysis(currentAnalyser);
     }
 
     audioRef.current.play();
@@ -166,6 +176,174 @@ function App() {
     }
   }, [spectrogramData, audioBuffer, mixAnalysisResults, analyzeMix]);
 
+  // Analyze key and tempo from full audio buffer when loaded (lightweight version)
+  useEffect(() => {
+    if (!audioBuffer) return;
+
+    // Use setTimeout to avoid blocking UI during load
+    const timeoutId = setTimeout(() => {
+      try {
+        const sampleRate = audioBuffer.sampleRate;
+        const leftChannel = audioBuffer.getChannelData(0);
+        const rightChannel = audioBuffer.numberOfChannels > 1
+          ? audioBuffer.getChannelData(1)
+          : leftChannel;
+
+        // === KEY DETECTION (simplified) ===
+        const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+        const MAJOR_PROFILE = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+        const MINOR_PROFILE = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+
+        // Sample a few segments and use energy in frequency bands
+        const chromagram = new Array(12).fill(0);
+        const segmentSize = 4096;
+        const numSegments = Math.min(20, Math.floor(leftChannel.length / segmentSize / 10));
+
+        for (let seg = 0; seg < numSegments; seg++) {
+          const startIdx = Math.floor((seg / numSegments) * (leftChannel.length - segmentSize));
+
+          // Calculate energy for each note using simple bandpass approximation
+          for (let note = 0; note < 12; note++) {
+            for (let octave = 2; octave <= 5; octave++) {
+              const freq = 440 * Math.pow(2, (note - 9 + (octave - 4) * 12) / 12);
+              const period = Math.round(sampleRate / freq);
+
+              if (period > 2 && startIdx + period * 4 < leftChannel.length) {
+                // Simple autocorrelation at this frequency
+                let corr = 0;
+                for (let i = 0; i < period * 2; i++) {
+                  const idx = startIdx + i;
+                  corr += leftChannel[idx] * leftChannel[idx + period];
+                }
+                chromagram[note] += Math.max(0, corr);
+              }
+            }
+          }
+        }
+
+        // Normalize and find best key
+        const maxChroma = Math.max(...chromagram);
+        if (maxChroma > 0) {
+          const normChroma = chromagram.map(v => v / maxChroma);
+
+          let bestKey = 'C major';
+          let bestCorr = -Infinity;
+
+          for (let root = 0; root < 12; root++) {
+            const corrMajor = normChroma.reduce((sum, val, i) =>
+              sum + val * MAJOR_PROFILE[(i - root + 12) % 12], 0);
+            const corrMinor = normChroma.reduce((sum, val, i) =>
+              sum + val * MINOR_PROFILE[(i - root + 12) % 12], 0);
+
+            if (corrMajor > bestCorr) { bestCorr = corrMajor; bestKey = `${NOTE_NAMES[root]} major`; }
+            if (corrMinor > bestCorr) { bestCorr = corrMinor; bestKey = `${NOTE_NAMES[root]} minor`; }
+          }
+          setDetectedKey(bestKey);
+        }
+
+        // === TEMPO DETECTION (energy-based, lightweight) ===
+        const hopSize = 2048;  // Larger hop = fewer calculations
+        const numFrames = Math.floor(leftChannel.length / hopSize);
+        const energies = [];
+
+        // Calculate RMS energy per frame
+        for (let frame = 0; frame < numFrames; frame++) {
+          let energy = 0;
+          const start = frame * hopSize;
+          for (let i = 0; i < hopSize; i++) {
+            const sample = leftChannel[start + i] || 0;
+            energy += sample * sample;
+          }
+          energies.push(Math.sqrt(energy / hopSize));
+        }
+
+        // Find peaks in energy (onsets)
+        const threshold = energies.reduce((a, b) => a + b, 0) / energies.length * 1.3;
+        const peakFrames = [];
+        for (let i = 1; i < energies.length - 1; i++) {
+          if (energies[i] > threshold && energies[i] > energies[i-1] && energies[i] >= energies[i+1]) {
+            if (peakFrames.length === 0 || i - peakFrames[peakFrames.length - 1] > 3) {
+              peakFrames.push(i);
+            }
+          }
+        }
+
+        // Calculate intervals between peaks
+        if (peakFrames.length >= 8) {
+          const intervals = [];
+          for (let i = 1; i < peakFrames.length; i++) {
+            intervals.push(peakFrames[i] - peakFrames[i - 1]);
+          }
+
+          // Find most common interval
+          const histogram = {};
+          intervals.forEach(interval => {
+            const bin = Math.round(interval);
+            histogram[bin] = (histogram[bin] || 0) + 1;
+          });
+
+          let bestInterval = 10;
+          let bestCount = 0;
+          for (const [bin, count] of Object.entries(histogram)) {
+            if (count > bestCount) {
+              bestCount = count;
+              bestInterval = parseInt(bin);
+            }
+          }
+
+          // Convert to BPM
+          const secondsPerBeat = (bestInterval * hopSize) / sampleRate;
+          let bpm = Math.round(60 / secondsPerBeat);
+
+          // Normalize to 70-160 range
+          while (bpm > 160) bpm = Math.round(bpm / 2);
+          while (bpm < 70 && bpm > 0) bpm = Math.round(bpm * 2);
+
+          if (bpm >= 70 && bpm <= 160) {
+            setEstimatedTempo(bpm);
+          }
+        }
+
+        // === PEAK FREQUENCY & RMS LEVEL ===
+        // Calculate overall RMS level
+        let sumSquares = 0;
+        for (let i = 0; i < leftChannel.length; i++) {
+          sumSquares += leftChannel[i] * leftChannel[i];
+        }
+        const rms = Math.sqrt(sumSquares / leftChannel.length);
+        setStaticRmsLevel(rms);
+
+        // Find dominant frequency using autocorrelation
+        // Sample from middle of track for representative frequency
+        const sampleStart = Math.floor(leftChannel.length * 0.4);
+        const sampleLength = Math.min(8192, leftChannel.length - sampleStart);
+        let bestFreq = 100;
+        let bestCorr = 0;
+
+        // Check frequencies from 30Hz to 500Hz (bass/low-mid range)
+        for (let freq = 30; freq <= 500; freq += 5) {
+          const period = Math.round(sampleRate / freq);
+          if (period < sampleLength / 2) {
+            let corr = 0;
+            for (let i = 0; i < sampleLength - period; i++) {
+              corr += leftChannel[sampleStart + i] * leftChannel[sampleStart + i + period];
+            }
+            if (corr > bestCorr) {
+              bestCorr = corr;
+              bestFreq = freq;
+            }
+          }
+        }
+        setStaticPeakFreq(bestFreq);
+
+      } catch (err) {
+        console.error('Error analyzing audio:', err);
+      }
+    }, 100); // Small delay to let UI render first
+
+    return () => clearTimeout(timeoutId);
+  }, [audioBuffer]);
+
   // Handle reference track loading
   const handleLoadReference = useCallback(async (file) => {
     await loadReferenceTrack(file, generateSpectrogram);
@@ -177,50 +355,8 @@ function App() {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Detect key from chromagram
-  useEffect(() => {
-    if (chromagram && chromagram.length === 12) {
-      const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-      const maxIdx = chromagram.indexOf(Math.max(...chromagram));
-      if (chromagram[maxIdx] > 0.3) {
-        // Simple major/minor detection based on chromagram pattern
-        const third = chromagram[(maxIdx + 4) % 12];
-        const minorThird = chromagram[(maxIdx + 3) % 12];
-        const quality = third > minorThird ? 'major' : 'minor';
-        setDetectedKey(`${NOTE_NAMES[maxIdx]} ${quality}`);
-      }
-    }
-  }, [chromagram]);
-
-  // Simple tempo estimation from RMS changes
-  const rmsHistoryRef = useRef([]);
-  useEffect(() => {
-    if (rmsLevel > 0 && isPlaying) {
-      rmsHistoryRef.current.push({ time: Date.now(), level: rmsLevel });
-      // Keep last 5 seconds
-      const cutoff = Date.now() - 5000;
-      rmsHistoryRef.current = rmsHistoryRef.current.filter(r => r.time > cutoff);
-
-      if (rmsHistoryRef.current.length > 20) {
-        // Count peaks (simple beat detection)
-        let peaks = 0;
-        const levels = rmsHistoryRef.current.map(r => r.level);
-        const avg = levels.reduce((a, b) => a + b, 0) / levels.length;
-        for (let i = 1; i < levels.length - 1; i++) {
-          if (levels[i] > avg * 1.2 && levels[i] > levels[i-1] && levels[i] > levels[i+1]) {
-            peaks++;
-          }
-        }
-        const duration = (rmsHistoryRef.current[rmsHistoryRef.current.length - 1].time - rmsHistoryRef.current[0].time) / 1000;
-        if (duration > 2) {
-          const bpm = Math.round((peaks / duration) * 60);
-          if (bpm > 60 && bpm < 200) {
-            setEstimatedTempo(bpm);
-          }
-        }
-      }
-    }
-  }, [rmsLevel, isPlaying]);
+  // Note: Key and tempo are now detected from full audio buffer on load (see above)
+  // Real-time detection removed to prevent unstable switching during playback
 
   // AI Assistant
   const handleAiQuery = async () => {
@@ -308,10 +444,10 @@ function App() {
                 <strong>Tempo:</strong> {estimatedTempo ? `~${estimatedTempo} BPM` : 'Detecting...'}
               </div>
               <div className="info-item">
-                <strong>Peak Freq:</strong> {Math.round(peakFrequency)} Hz
+                <strong>Peak Freq:</strong> {Math.round(isPlaying ? peakFrequency : (staticPeakFreq || 0))} Hz
               </div>
               <div className="info-item">
-                <strong>Level:</strong> {(rmsLevel * 100).toFixed(1)}%
+                <strong>Level:</strong> {((isPlaying ? rmsLevel : (staticRmsLevel || 0)) * 100).toFixed(1)}%
               </div>
             </div>
           </section>
@@ -379,14 +515,22 @@ function App() {
                 showControls={true}
                 showStats={true}
               />
-              <ChordDetector
-                chromagram={chromagram}
-                showHistory={true}
-                showPiano={true}
-              />
             </div>
           </section>
         )}
+
+        {/* Chord Detector with Piano - always visible */}
+        <section className="chord-section">
+          <ChordDetector
+            chromagram={chromagram}
+            chromagramByOctave={chromagramByOctave}
+            showHistory={true}
+            showPiano={true}
+            showDiagram={true}
+            detectedKey={detectedKey}
+            tempo={estimatedTempo}
+          />
+        </section>
 
         {audioFile && (
           <section className="analysis-section">
@@ -427,6 +571,20 @@ function App() {
               </button>
             </div>
           </div>
+        </section>
+
+        {/* Gemini Mix Analyzer Section */}
+        <section className="gemini-section">
+          <GeminiMixAnalyzer
+            audioFile={audioFile}
+            audioBuffer={audioBuffer}
+            onSeek={handleSpectrogramSeek}
+          />
+        </section>
+
+        {/* Stem Separator Section */}
+        <section className="stem-section">
+          <StemSeparator audioFile={audioFile} />
         </section>
       </main>
 

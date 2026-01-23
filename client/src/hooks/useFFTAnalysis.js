@@ -2,10 +2,22 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
+// Octave range for chromagram analysis (C1 to B6)
+const MIN_OCTAVE = 1;
+const MAX_OCTAVE = 6;
+
 export function useFFTAnalysis() {
   const [frequencyData, setFrequencyData] = useState([]);
   const [waveformData, setWaveformData] = useState([]);
-  const [chromagram, setChromagram] = useState([]);
+  const [chromagram, setChromagram] = useState(new Array(12).fill(0));
+  const [chromagramByOctave, setChromagramByOctave] = useState(() => {
+    // Initialize octave chromagram: { 1: [12 zeros], 2: [12 zeros], ... 6: [12 zeros] }
+    const initial = {};
+    for (let oct = MIN_OCTAVE; oct <= MAX_OCTAVE; oct++) {
+      initial[oct] = new Array(12).fill(0);
+    }
+    return initial;
+  });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [peakFrequency, setPeakFrequency] = useState(0);
   const [rmsLevel, setRmsLevel] = useState(0);
@@ -42,6 +54,48 @@ export function useFFTAnalysis() {
     return chroma;
   }, []);
 
+  // Compute octave-aware chromagram: energy per pitch class per octave
+  const computeChromagramByOctave = useCallback((freqData, sampleRate, fftSize) => {
+    const octaveChroma = {};
+    for (let oct = MIN_OCTAVE; oct <= MAX_OCTAVE; oct++) {
+      octaveChroma[oct] = new Array(12).fill(0);
+    }
+
+    const binSize = sampleRate / fftSize;
+
+    for (let i = 1; i < freqData.length; i++) {
+      const freq = i * binSize;
+      if (freq < 20 || freq > 8000) continue;
+
+      // Convert frequency to MIDI note number
+      // A4 = 440Hz = MIDI 69
+      const midiNote = 12 * Math.log2(freq / 440) + 69;
+      const roundedMidi = Math.round(midiNote);
+
+      // Calculate octave (MIDI 12-23 = octave 1, 24-35 = octave 2, etc.)
+      // C1 = MIDI 24, C2 = MIDI 36, C3 = MIDI 48, C4 = MIDI 60
+      const octave = Math.floor(roundedMidi / 12) - 1;
+      const pitchClass = ((roundedMidi % 12) + 12) % 12;
+
+      if (octave >= MIN_OCTAVE && octave <= MAX_OCTAVE && pitchClass >= 0 && pitchClass < 12) {
+        // Weight by amplitude (convert from 0-255 to 0-1)
+        octaveChroma[octave][pitchClass] += freqData[i] / 255;
+      }
+    }
+
+    // Normalize each octave independently
+    for (let oct = MIN_OCTAVE; oct <= MAX_OCTAVE; oct++) {
+      const max = Math.max(...octaveChroma[oct]);
+      if (max > 0) {
+        for (let i = 0; i < 12; i++) {
+          octaveChroma[oct][i] /= max;
+        }
+      }
+    }
+
+    return octaveChroma;
+  }, []);
+
   const analyze = useCallback(() => {
     if (!analyserRef.current) return;
 
@@ -59,9 +113,13 @@ export function useFFTAnalysis() {
     // Update waveform data
     setWaveformData(Array.from(timeDataArray));
 
-    // Compute chromagram
+    // Compute chromagram (flattened)
     const chroma = computeChromagram(freqDataArray, 44100, analyser.fftSize);
     setChromagram(chroma);
+
+    // Compute octave-aware chromagram
+    const octaveChroma = computeChromagramByOctave(freqDataArray, 44100, analyser.fftSize);
+    setChromagramByOctave(octaveChroma);
 
     // Find peak frequency
     let maxVal = 0;
@@ -82,7 +140,7 @@ export function useFFTAnalysis() {
       sum += normalized * normalized;
     }
     setRmsLevel(Math.sqrt(sum / bufferLength));
-  }, [computeChromagram]);
+  }, [computeChromagram, computeChromagramByOctave]);
 
   const startAnalysis = useCallback((analyser) => {
     analyserRef.current = analyser;
@@ -123,6 +181,7 @@ export function useFFTAnalysis() {
     frequencyData,
     waveformData,
     chromagram,
+    chromagramByOctave,
     isAnalyzing,
     peakFrequency,
     rmsLevel,

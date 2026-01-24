@@ -39,6 +39,9 @@ function ChordDetector({
 
   // Advanced chord detection
   const [advancedMode, setAdvancedMode] = useState(false);
+  const [autoDetect, setAutoDetect] = useState(true); // Auto-switch modes
+  const [gridAlign, setGridAlign] = useState(true);   // Align chords to grid
+  const [showDebug, setShowDebug] = useState(false);  // Show debug panel
   const {
     isEnabled: advancedEnabled,
     currentChord: advancedChord,
@@ -49,6 +52,7 @@ function ChordDetector({
     chromaTotal,
     isStable,
     mode: detectionMode,
+    debugInfo,
     enable: enableAdvanced,
     disable: disableAdvanced,
     reset: resetAdvanced,
@@ -57,24 +61,39 @@ function ChordDetector({
     getConfidenceColor,
     HARMONIC_INSTRUMENTS,
   } = useAdvancedChordDetection({
-    enabled: advancedMode,
+    enabled: advancedMode || autoDetect, // Enable if either mode is on
     stems
   });
 
+  // Auto-detection: use advanced when confidence is better
+  const useAdvancedResult = autoDetect
+    ? (advancedConfidence > (basicChord?.confidence || 0) + 0.1)
+    : advancedMode;
+
   // Use advanced or basic detection based on mode
-  const currentChord = advancedMode && advancedChord ? {
+  const currentChord = useAdvancedResult && advancedChord ? {
     ...advancedChord,
     symbol: `${advancedChord.root}${advancedChord.type === 'maj' ? '' : advancedChord.type}`,
     quality: advancedChord.type,
-    confidence: advancedConfidence
-  } : basicChord;
+    confidence: advancedConfidence,
+    source: 'advanced'
+  } : basicChord ? { ...basicChord, source: 'basic' } : null;
 
-  const chordHistory = advancedMode ? advancedHistory.map(h => ({
+  // Grid alignment helper - quantize timestamp to nearest beat
+  const quantizeToGrid = useCallback((timestampMs) => {
+    if (!tempo || !gridAlign) return timestampMs;
+    const beatDurationMs = 60000 / tempo;
+    const beats = Math.round(timestampMs / beatDurationMs);
+    return beats * beatDurationMs;
+  }, [tempo, gridAlign]);
+
+  const chordHistory = (useAdvancedResult || advancedMode) ? advancedHistory.map(h => ({
     ...h.chord,
     symbol: `${h.chord.root}${h.chord.type === 'maj' ? '' : h.chord.type}`,
     quality: h.chord.type,
     confidence: h.confidence,
-    timestamp: h.timestamp
+    timestamp: quantizeToGrid(h.timestamp),
+    source: 'advanced'
   })) : basicHistory;
 
   const clearHistory = advancedMode ? resetAdvanced : clearBasicHistory;
@@ -1091,27 +1110,124 @@ function ChordDetector({
 
   return (
     <div className="chord-detector" data-testid="chord-display">
-      {/* Advanced Mode Toggle */}
+      {/* Detection Mode Controls */}
       <div className="detection-mode-toggle">
-        <label className="mode-switch">
-          <input
-            type="checkbox"
-            checked={advancedMode}
-            onChange={(e) => setAdvancedMode(e.target.checked)}
-          />
-          <span className="mode-slider"></span>
-          <span className="mode-label">
-            {advancedMode ? 'Advanced' : 'Basic'}
+        <div className="mode-controls-row">
+          {/* Auto-Detect Toggle */}
+          <label className="mode-switch" title="Automatically switch between Basic and Advanced based on confidence">
+            <input
+              type="checkbox"
+              checked={autoDetect}
+              onChange={(e) => {
+                setAutoDetect(e.target.checked);
+                if (e.target.checked) setAdvancedMode(false);
+              }}
+            />
+            <span className="mode-slider auto"></span>
+            <span className="mode-label">Auto</span>
+          </label>
+
+          {/* Manual Advanced Toggle */}
+          <label className="mode-switch" title="Force advanced multi-instrument detection">
+            <input
+              type="checkbox"
+              checked={advancedMode}
+              onChange={(e) => {
+                setAdvancedMode(e.target.checked);
+                if (e.target.checked) setAutoDetect(false);
+              }}
+            />
+            <span className="mode-slider"></span>
+            <span className="mode-label">Advanced</span>
+          </label>
+
+          {/* Grid Align Toggle */}
+          <label className="mode-switch" title="Align chord changes to beat grid">
+            <input
+              type="checkbox"
+              checked={gridAlign}
+              onChange={(e) => setGridAlign(e.target.checked)}
+            />
+            <span className="mode-slider grid"></span>
+            <span className="mode-label">Grid</span>
+          </label>
+
+          {/* Debug Toggle */}
+          <button
+            className={`debug-toggle ${showDebug ? 'active' : ''}`}
+            onClick={() => setShowDebug(!showDebug)}
+            title="Show debug information"
+          >
+            Debug
+          </button>
+        </div>
+
+        {/* Status Info */}
+        <div className="advanced-info">
+          <span className={`mode-badge ${currentChord?.source || ''}`}>
+            {currentChord?.source === 'advanced' ? 'Advanced' : 'Basic'}
           </span>
-        </label>
-        {advancedMode && (
-          <div className="advanced-info">
-            <span className="mode-badge">{stems ? 'Stems' : 'Full Mix'}</span>
-            {bassNote && <span className="bass-note">Bass: {bassNote}</span>}
-            {isStable && <span className="stable-badge">Stable</span>}
-          </div>
-        )}
+          {stems && <span className="mode-badge stems">Stems</span>}
+          {!stems && <span className="mode-badge fullmix">Full Mix</span>}
+          {bassNote && <span className="bass-note">Bass: {bassNote}</span>}
+          {isStable && <span className="stable-badge">Stable</span>}
+          {gridAlign && tempo && <span className="grid-badge">Grid: {Math.round(tempo)}BPM</span>}
+        </div>
       </div>
+
+      {/* Debug Panel */}
+      {showDebug && debugInfo && (
+        <div className="debug-panel">
+          <h5>Detection Debug</h5>
+          <div className="debug-grid">
+            <div className="debug-item">
+              <span className="debug-label">Sample Rate:</span>
+              <span className="debug-value">{debugInfo.sampleRate}Hz</span>
+            </div>
+            <div className="debug-item">
+              <span className="debug-label">FFT Size:</span>
+              <span className="debug-value">{debugInfo.fftSize}</span>
+            </div>
+            <div className="debug-item">
+              <span className="debug-label">Avg Level:</span>
+              <span className="debug-value">{(debugInfo.avgLevel * 100).toFixed(1)}%</span>
+            </div>
+            <div className="debug-item">
+              <span className="debug-label">Primary Max:</span>
+              <span className="debug-value">{(debugInfo.primaryMax * 100).toFixed(1)}%</span>
+            </div>
+            <div className="debug-item">
+              <span className="debug-label">Bass Max:</span>
+              <span className="debug-value">{(debugInfo.bassMax * 100).toFixed(1)}%</span>
+            </div>
+            <div className="debug-item">
+              <span className="debug-label">High Max:</span>
+              <span className="debug-value">{(debugInfo.highMax * 100).toFixed(1)}%</span>
+            </div>
+          </div>
+          {chromaTotal && (
+            <div className="chroma-visual">
+              <h6>Chroma (C-B)</h6>
+              <div className="chroma-bars">
+                {Array.from(chromaTotal).map((val, i) => (
+                  <div key={i} className="chroma-bar-container">
+                    <div
+                      className="chroma-bar"
+                      style={{
+                        height: `${val * 100}%`,
+                        backgroundColor: `hsl(${i * 30}, 70%, 50%)`
+                      }}
+                    />
+                    <span className="chroma-note">
+                      {['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'][i]}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Current Chord Display */}
       <div className="current-chord-section">

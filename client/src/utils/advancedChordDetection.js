@@ -694,32 +694,110 @@ export class AdvancedChordDetector {
 
   /**
    * Process a frame from full mix (no stems)
-   * Uses harmonic separation approximation
+   * Uses harmonic separation approximation with overlapping bands
    */
   processFullMix(frequencyData, loudness = 0.5) {
-    // Simulate multi-instrument by extracting from different frequency bands
-    const bands = {
-      bass: { low: 30, high: 300 },
-      mid: { low: 300, high: 2000 },
-      high: { low: 2000, high: 8000 }
-    };
+    // For full mix, extract chroma directly from different harmonic regions
+    // and combine them with appropriate weighting
 
-    const instrumentData = {
-      bass: {
-        frequencyData: this.extractBand(frequencyData, bands.bass.low, bands.bass.high),
-        loudness: loudness * 0.8
-      },
-      keys: {
-        frequencyData: this.extractBand(frequencyData, bands.mid.low, bands.mid.high),
-        loudness: loudness
-      },
-      synth_pad: {
-        frequencyData: this.extractBand(frequencyData, bands.high.low, bands.high.high),
-        loudness: loudness * 0.6
+    // Primary chord range: 80Hz - 4kHz (covers most fundamental + harmonics)
+    const primaryChroma = extractChromaFromBand(
+      frequencyData,
+      this.sampleRate,
+      80,
+      4000
+    );
+
+    // Bass region: 30-250 Hz (root note detection)
+    const bassChroma = extractChromaFromBand(
+      frequencyData,
+      this.sampleRate,
+      30,
+      250
+    );
+
+    // Mid-high region: 1kHz - 6kHz (upper harmonics, helps with chord quality)
+    const highChroma = extractChromaFromBand(
+      frequencyData,
+      this.sampleRate,
+      1000,
+      6000
+    );
+
+    // Combine chromas with weights
+    const chromaTotal = new Float32Array(12);
+    for (let i = 0; i < 12; i++) {
+      // Primary has most weight, bass helps with root, high helps with quality
+      chromaTotal[i] = (
+        primaryChroma[i] * 0.6 +
+        bassChroma[i] * 0.25 +
+        highChroma[i] * 0.15
+      );
+    }
+
+    // Normalize
+    const maxVal = Math.max(...chromaTotal);
+    if (maxVal > 0) {
+      for (let i = 0; i < 12; i++) {
+        chromaTotal[i] /= maxVal;
+      }
+    }
+
+    // Add to history for smoothing
+    if (!this.fullMixChromaHistory) {
+      this.fullMixChromaHistory = [];
+    }
+    this.fullMixChromaHistory.push(chromaTotal);
+    if (this.fullMixChromaHistory.length > this.smoothingWindow * 2) {
+      this.fullMixChromaHistory.shift();
+    }
+
+    // Apply temporal smoothing
+    const smoothedChroma = smoothChroma(
+      this.fullMixChromaHistory,
+      this.smoothingWindow
+    );
+
+    // Detect chord from combined chroma
+    const chordResult = detectChordFromChroma(smoothedChroma);
+
+    // Find bass note from bass chroma
+    let bassNoteIndex = 0;
+    let maxBass = 0;
+    for (let i = 0; i < 12; i++) {
+      if (bassChroma[i] > maxBass) {
+        maxBass = bassChroma[i];
+        bassNoteIndex = i;
+      }
+    }
+    const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    const bassNote = maxBass > 0.3 ? NOTE_NAMES[bassNoteIndex] : null;
+
+    // Apply smoother for stability
+    const smootherResult = this.smoother.update(chordResult.chord, chordResult.confidence);
+
+    // Calculate instrument contributions (simulated for full mix)
+    const instrumentContributions = [
+      { instrument: 'primary', weight: 0.6, chroma: primaryChroma },
+      { instrument: 'bass', weight: 0.25, chroma: bassChroma },
+      { instrument: 'harmonics', weight: 0.15, chroma: highChroma }
+    ];
+
+    return {
+      chord: smootherResult.chord,
+      confidence: smootherResult.confidence,
+      stable: smootherResult.stable,
+      chromaTotal: smoothedChroma,
+      bassNote,
+      instrumentContributions,
+      rawChroma: chromaTotal,
+      debug: {
+        primaryMax: Math.max(...primaryChroma),
+        bassMax: Math.max(...bassChroma),
+        highMax: Math.max(...highChroma),
+        loudness
       }
     };
-
-    return this.processFrame(instrumentData);
   }
 
   extractBand(frequencyData, lowFreq, highFreq) {
@@ -739,7 +817,13 @@ export class AdvancedChordDetector {
       this.chromaHistories[inst] = [];
       this.prevMagnitudes[inst] = null;
     }
+    this.fullMixChromaHistory = [];
     this.smoother.reset();
+  }
+
+  // Update sample rate (e.g., when audio context changes)
+  setSampleRate(sampleRate) {
+    this.sampleRate = sampleRate;
   }
 }
 

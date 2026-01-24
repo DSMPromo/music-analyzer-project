@@ -99,8 +99,8 @@
 /* Advanced Mode Toggle */
 .detection-mode-toggle {
   display: flex;
-  align-items: center;
-  gap: 1rem;
+  flex-direction: column;
+  gap: 0.75rem;
   margin-bottom: 1rem;
   padding-bottom: 1rem;
   border-bottom: 1px solid #0f3460;
@@ -161,8 +161,8 @@
 .advanced-info {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  margin-left: auto;
+  gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
 .mode-badge {
@@ -193,11 +193,171 @@
   font-size: 0.75rem;
 }
 
+.grid-badge {
+  background: rgba(250, 204, 21, 0.2);
+  color: #facc15;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+
+.mode-badge.advanced {
+  background: rgba(233, 69, 96, 0.2);
+  color: #e94560;
+}
+
+.mode-badge.basic {
+  background: rgba(100, 100, 100, 0.2);
+  color: #888;
+}
+
+.mode-badge.stems {
+  background: rgba(74, 222, 128, 0.2);
+  color: #4ade80;
+}
+
+.mode-badge.fullmix {
+  background: rgba(59, 130, 246, 0.2);
+  color: #3b82f6;
+}
+
 .confidence-value {
   font-size: 0.75rem;
   color: #888;
   margin-left: 0.5rem;
   font-family: monospace;
+}
+
+/* Mode Controls Row */
+.mode-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.mode-slider.auto {
+  background: #1e3a5f;
+}
+
+.mode-switch input:checked + .mode-slider.auto {
+  background: #3b82f6;
+}
+
+.mode-slider.grid {
+  background: #1e3a5f;
+}
+
+.mode-switch input:checked + .mode-slider.grid {
+  background: #facc15;
+}
+
+.debug-toggle {
+  background: transparent;
+  border: 1px solid #333;
+  color: #888;
+  padding: 0.25rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.debug-toggle:hover {
+  border-color: #666;
+  color: #ccc;
+}
+
+.debug-toggle.active {
+  background: rgba(233, 69, 96, 0.2);
+  border-color: #e94560;
+  color: #e94560;
+}
+
+/* Debug Panel */
+.debug-panel {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.debug-panel h5 {
+  margin: 0 0 0.75rem 0;
+  color: #e94560;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.debug-panel h6 {
+  margin: 0.75rem 0 0.5rem 0;
+  color: #888;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.debug-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.5rem;
+}
+
+.debug-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.25rem 0.5rem;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 4px;
+}
+
+.debug-label {
+  color: #888;
+  font-size: 0.7rem;
+}
+
+.debug-value {
+  color: #4ade80;
+  font-family: monospace;
+  font-size: 0.75rem;
+}
+
+/* Chroma Visualization */
+.chroma-visual {
+  margin-top: 0.75rem;
+}
+
+.chroma-bars {
+  display: flex;
+  gap: 2px;
+  height: 60px;
+  align-items: flex-end;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 4px;
+  padding: 0.5rem;
+}
+
+.chroma-bar-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+}
+
+.chroma-bar {
+  width: 100%;
+  border-radius: 2px 2px 0 0;
+  transition: height 0.1s ease;
+  min-height: 2px;
+}
+
+.chroma-note {
+  font-size: 0.6rem;
+  color: #666;
+  margin-top: 2px;
 }
 
 /* Instrument Contributions */

@@ -32,6 +32,7 @@ export function useAdvancedChordDetection(options = {}) {
   const [chromaTotal, setChromaTotal] = useState(null);
   const [isStable, setIsStable] = useState(false);
   const [mode, setMode] = useState('full_mix'); // 'stems' or 'full_mix'
+  const [debugInfo, setDebugInfo] = useState(null);
 
   // Refs
   const detectorRef = useRef(null);
@@ -149,15 +150,37 @@ export function useAdvancedChordDetection(options = {}) {
   const processFullMix = useCallback((analyser) => {
     if (!detectorRef.current || !isEnabled || !analyser) return null;
 
+    // Update sample rate from audio context if available
+    if (analyser.context && analyser.context.sampleRate !== detectorRef.current.sampleRate) {
+      detectorRef.current.setSampleRate(analyser.context.sampleRate);
+    }
+
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
     analyser.getByteFrequencyData(dataArray);
 
-    // Calculate loudness
+    // Calculate loudness with frequency weighting (emphasize mid-range)
     let sum = 0;
+    let weightedSum = 0;
+    const midStart = Math.floor(dataArray.length * 0.1); // ~200Hz
+    const midEnd = Math.floor(dataArray.length * 0.4);   // ~4kHz
+
     for (let i = 0; i < dataArray.length; i++) {
       sum += dataArray[i];
+      // Weight mid-range more heavily
+      if (i >= midStart && i <= midEnd) {
+        weightedSum += dataArray[i] * 1.5;
+      } else {
+        weightedSum += dataArray[i] * 0.5;
+      }
     }
-    const loudness = sum / dataArray.length / 255;
+    const loudness = weightedSum / (dataArray.length * 1.5) / 255;
+
+    // Check if there's enough signal
+    const avgLevel = sum / dataArray.length / 255;
+    if (avgLevel < 0.02) {
+      // Too quiet, skip processing
+      return null;
+    }
 
     const result = detectorRef.current.processFullMix(dataArray, loudness);
 
@@ -167,6 +190,13 @@ export function useAdvancedChordDetection(options = {}) {
     setChromaTotal(result.chromaTotal);
     setInstrumentContributions(result.instrumentContributions);
     setBassNote(result.bassNote);
+    setDebugInfo({
+      ...result.debug,
+      avgLevel,
+      sampleRate: analyser.context?.sampleRate || 44100,
+      fftSize: analyser.fftSize,
+      binCount: analyser.frequencyBinCount
+    });
 
     // Add to history
     if (result.chord && result.stable) {
@@ -245,6 +275,7 @@ export function useAdvancedChordDetection(options = {}) {
     chromaTotal,
     isStable,
     mode,
+    debugInfo,
 
     // Actions
     enable,

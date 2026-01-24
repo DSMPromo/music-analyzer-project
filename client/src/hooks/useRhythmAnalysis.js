@@ -12,6 +12,9 @@ import {
   flattenHits,
   predictQuietHits,
   formatQuietHitsForGrid,
+  analyzeWithAIGuidance,
+  getAICacheStatus,
+  detectPatternFromSpectrogram,
 } from '../services/rhythmAnalysis';
 
 /**
@@ -211,9 +214,22 @@ export function useRhythmAnalysis() {
   const [isFindingQuietHits, setIsFindingQuietHits] = useState(false);
   const [quietHitResult, setQuietHitResult] = useState(null);
 
+  // AI-guided analysis state
+  const [aiAnalysis, setAiAnalysis] = useState(null);
+  const [aiCacheStatus, setAiCacheStatus] = useState(null);
+  const [isAiAnalyzing, setIsAiAnalyzing] = useState(false);
+
+  // Pattern detection state (AI identifies patterns, code generates timestamps)
+  const [patternDetectionResult, setPatternDetectionResult] = useState(null);
+  const [isDetectingPattern, setIsDetectingPattern] = useState(false);
+
+  // Track if pattern hits have been added (to prevent overwrites)
+  const [hasPatternHits, setHasPatternHits] = useState(false);
+
   // Refs
   const currentFileRef = useRef(null);
   const abortControllerRef = useRef(null);
+  const isDetectingPatternRef = useRef(false);  // Ref to avoid dependency changes
 
   /**
    * Check if the Python service is available
@@ -242,6 +258,13 @@ export function useRhythmAnalysis() {
    */
   const analyzeFile = useCallback(async (audioFile, options = {}) => {
     const { useStem = false, useAI = false, mergeWithJs = null } = options;
+
+    // Don't run if pattern detection is in progress or has added hits
+    // Use ref to avoid triggering re-renders when this function reference changes
+    if (isDetectingPatternRef.current || hasPatternHits) {
+      console.log('Skipping analyzeFile - pattern detection active or has hits');
+      return null;
+    }
 
     // Reset state
     setAnalysisError(null);
@@ -318,7 +341,7 @@ export function useRhythmAnalysis() {
       setAnalysisState(ANALYSIS_STATES.ERROR);
       return null;
     }
-  }, [checkService]);
+  }, [checkService, hasPatternHits]);
 
   /**
    * Cancel ongoing analysis
@@ -825,6 +848,227 @@ export function useRhythmAnalysis() {
   }, [bpm, hits, downbeats, timeSignature, audioDuration]);
 
   /**
+   * Run AI-guided analysis using Gemini spectrogram analysis.
+   * This uses AI to analyze the spectrogram first, then configures detection.
+   *
+   * @param {File} audioFile - The audio file to analyze
+   * @param {Object} options - Analysis options
+   * @param {string} options.modelTier - 'free', 'standard', or 'premium'
+   * @param {boolean} options.useCache - Use cached AI analysis if available
+   * @param {boolean} options.forceReanalyze - Force new AI analysis
+   */
+  const analyzeWithAI = useCallback(async (audioFile, options = {}) => {
+    const { modelTier = 'free', useCache = true, forceReanalyze = false } = options;
+
+    // Don't run if pattern detection is in progress or has added hits
+    if (isDetectingPatternRef.current || hasPatternHits) {
+      console.log('Skipping analyzeWithAI - pattern detection active or has hits');
+      return null;
+    }
+
+    // Reset state
+    setAnalysisError(null);
+    setRawResult(null);
+    currentFileRef.current = audioFile;
+    setIsAiAnalyzing(true);
+
+    try {
+      // Check service availability first
+      setAnalysisState(ANALYSIS_STATES.CHECKING_SERVICE);
+      setAnalysisProgress(5);
+
+      const isAvailable = await checkService();
+      if (!isAvailable) {
+        setAnalysisState(ANALYSIS_STATES.SERVICE_UNAVAILABLE);
+        return null;
+      }
+
+      // Run AI-guided analysis
+      setAnalysisState(ANALYSIS_STATES.ANALYZING_BEATS);
+      setAnalysisProgress(20);
+
+      const result = await analyzeWithAIGuidance(audioFile, {
+        useCache,
+        modelTier,
+        forceReanalyze,
+      });
+
+      setAnalysisProgress(80);
+      setAnalysisState(ANALYSIS_STATES.CLASSIFYING_HITS);
+
+      // Store AI analysis info
+      setAiAnalysis(result.ai_analysis || null);
+
+      // Update state with results - auto-correct BPM if needed
+      const normalized = normalizeBpm(result.bpm);
+      setBpm(normalized.bpm);
+      setBpmAutoCorrected(normalized.wasAutoCorrected ? {
+        correction: normalized.correction,
+        originalBpm: normalized.originalBpm,
+      } : null);
+      setBpmConfidence(result.bpm_confidence);
+      setBeats(result.beats);
+      setDownbeats(result.downbeats);
+      setTimeSignature(result.time_signature);
+      setSwing(result.swing);
+      setAnalysisMethod('ai-guided');
+      setAudioDuration(result.duration);
+      setAnalysisSource('ai_analysis');
+      setDetectedGenre(result.detected_genre);
+      setGenreConfidence(result.genre_confidence || 0);
+      setRawResult(result);
+
+      // Format hits for grid display
+      const formattedHits = formatHitsForGrid(result, result.bpm, result.time_signature);
+      setHits(formattedHits);
+
+      setAnalysisProgress(100);
+      setAnalysisState(ANALYSIS_STATES.COMPLETE);
+
+      return result;
+
+    } catch (error) {
+      setAnalysisError(error.message);
+      setAnalysisState(ANALYSIS_STATES.ERROR);
+      return null;
+    } finally {
+      setIsAiAnalyzing(false);
+    }
+  }, [checkService, hasPatternHits]);
+
+  /**
+   * Fetch AI cache status
+   */
+  const fetchAiCacheStatus = useCallback(async () => {
+    try {
+      const status = await getAICacheStatus();
+      setAiCacheStatus(status);
+      return status;
+    } catch (error) {
+      console.error('Failed to fetch AI cache status:', error);
+      return null;
+    }
+  }, []);
+
+  /**
+   * Detect patterns from spectrogram using AI.
+   * AI identifies PATTERNS (start_bar, end_bar, beat_positions),
+   * then code GENERATES timestamps mathematically.
+   *
+   * This is more accurate for quiet/subtle percussion than threshold-based detection.
+   *
+   * @param {File} audioFile - The audio file to analyze
+   * @param {Object} options - Detection options
+   * @param {string} options.instruments - Comma-separated instruments (default: 'perc,clap')
+   */
+  const detectPatterns = useCallback(async (audioFile, options = {}) => {
+    const { instruments = 'perc,clap' } = options;
+
+    // Set both state and ref
+    setIsDetectingPattern(true);
+    isDetectingPatternRef.current = true;
+    setPatternDetectionResult(null);
+
+    // Store current analysis state to restore later
+    const previousState = analysisState;
+
+    try {
+      // Check service availability - use cached value if available, otherwise check
+      if (!serviceAvailable) {
+        const isAvailable = await checkService();
+        if (!isAvailable) {
+          throw new Error('Rhythm analyzer service not available');
+        }
+      }
+
+      // Call the pattern detection API
+      console.log('Calling detectPatternFromSpectrogram...');
+      const result = await detectPatternFromSpectrogram(audioFile, { instruments });
+      console.log('Pattern detection result:', result);
+
+      // Restore analysis state if it was COMPLETE before
+      if (previousState === ANALYSIS_STATES.COMPLETE) {
+        setAnalysisState(ANALYSIS_STATES.COMPLETE);
+      }
+
+      setPatternDetectionResult(result);
+
+      // If successful and we have new hits, merge them into existing hits
+      // Backend returns: generated_hits (array), total_generated (count)
+      const generatedHits = result.generated_hits || [];
+      const totalGenerated = result.total_generated || generatedHits.length;
+      console.log(`Got ${totalGenerated} hits, generatedHits:`, generatedHits);
+
+      if (totalGenerated > 0) {
+        console.log(`Pattern detection: Merging ${totalGenerated} hits...`);
+        console.log('First hit:', generatedHits[0]);
+
+        // Mark that we have pattern hits (to prevent overwrites)
+        setHasPatternHits(true);
+
+        setHits(prevHits => {
+          const merged = { ...prevHits };
+
+          // Process each generated hit
+          for (const hit of generatedHits) {
+            const drumType = hit.type || 'perc';
+            if (!merged[drumType]) merged[drumType] = [];
+
+            // Convert time (seconds) to timestamp (milliseconds)
+            const timestampMs = hit.time * 1000;
+
+            // Check for duplicates (within 50ms)
+            const isDuplicate = merged[drumType].some(
+              existing => Math.abs(existing.timestamp - timestampMs) < 50
+            );
+
+            if (!isDuplicate) {
+              merged[drumType].push({
+                timestamp: timestampMs,
+                type: drumType,
+                velocity: 0.7,
+                confidence: hit.confidence || 0.85,
+                isPatternDetected: true,
+                isPythonAnalysis: true,
+                bar: hit.bar,
+                beat: hit.beat,
+              });
+            }
+          }
+
+          // Sort each instrument by timestamp
+          for (const drumType of Object.keys(merged)) {
+            merged[drumType].sort((a, b) => a.timestamp - b.timestamp);
+          }
+
+          // Log final counts
+          console.log('Pattern detection merged counts:', {
+            perc: merged.perc?.length || 0,
+            clap: merged.clap?.length || 0,
+            kick: merged.kick?.length || 0,
+          });
+
+          return merged;
+        });
+
+        console.log(`Pattern detection complete: ${totalGenerated} hits added`);
+      } else {
+        console.log('Pattern detection: No hits generated');
+      }
+
+      return result;
+
+    } catch (error) {
+      console.error('Pattern detection failed:', error);
+      setPatternDetectionResult({ success: false, error: error.message });
+      return null;
+    } finally {
+      setIsDetectingPattern(false);
+      isDetectingPatternRef.current = false;
+    }
+  }, [checkService, serviceAvailable, analysisState]);
+
+  /**
    * Reset to detected values
    */
   const resetToDetected = useCallback(() => {
@@ -873,6 +1117,7 @@ export function useRhythmAnalysis() {
     setHitsBeforeFilter(0);
     setHitsAfterFilter(0);
     setRawResult(null);
+    setHasPatternHits(false);
     currentFileRef.current = null;
   }, []);
 
@@ -897,6 +1142,15 @@ export function useRhythmAnalysis() {
     };
     checkOnMount();
   }, []);
+
+  // Debug: Log whenever hits changes
+  useEffect(() => {
+    console.log('HITS STATE CHANGED:', {
+      perc: hits.perc?.length || 0,
+      kick: hits.kick?.length || 0,
+      snare: hits.snare?.length || 0,
+    });
+  }, [hits]);
 
   return {
     // Analysis state
@@ -976,5 +1230,18 @@ export function useRhythmAnalysis() {
     isFindingQuietHits,
     quietHitResult,
     findQuietHits,
+
+    // AI-guided analysis
+    aiAnalysis,
+    aiCacheStatus,
+    isAiAnalyzing,
+    analyzeWithAI,
+    fetchAiCacheStatus,
+
+    // Pattern detection (AI identifies patterns, code generates timestamps)
+    patternDetectionResult,
+    isDetectingPattern,
+    detectPatterns,
+    hasPatternHits,
   };
 }

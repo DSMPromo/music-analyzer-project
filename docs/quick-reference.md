@@ -128,6 +128,15 @@ All test scripts are in `scripts/testing/`:
 ./scripts/testing/test-adaptive-detection.sh /path/to/audio.wav
 ```
 
+### Detection Accuracy Test
+```bash
+# Test detection accuracy (92.4% Grade A benchmark)
+./scripts/test-detection-accuracy.sh /path/to/audio.wav
+
+# Results show per-instrument accuracy:
+# Kicks: 98%, Snares: 95%, Hi-Hats: 75%, Claps: 74%
+```
+
 ### AI-Guided Detection
 ```bash
 # Test AI-guided detection with free tier

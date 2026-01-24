@@ -130,6 +130,18 @@
   color: #10b981;
 }
 
+/* AI Analysis Badge */
+.rgp-ai-badge {
+  padding: 0.25rem 0.5rem;
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(59, 130, 246, 0.2));
+  border: 1px solid rgba(139, 92, 246, 0.4);
+  border-radius: 4px;
+  font-size: 0.7rem;
+  color: #a78bfa;
+  font-weight: 600;
+  cursor: help;
+}
+
 .rgp-debug-btn {
   padding: 0.25rem 0.5rem;
   background: rgba(156, 163, 175, 0.2);

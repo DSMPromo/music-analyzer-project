@@ -190,11 +190,23 @@ function App() {
     isFindingQuietHits,
     quietHitResult,
     findQuietHits,
+    // AI-guided analysis (Gemini 3 Pro)
+    aiAnalysis,
+    isAiAnalyzing,
+    analyzeWithAI,
+    // Pattern detection (AI identifies patterns, code generates timestamps)
+    patternDetectionResult,
+    isDetectingPattern,
+    detectPatterns,
+    hasPatternHits: hasPatternHitsFromHook,
   } = useRhythmAnalysis();
 
   // Use Python results when available, fall back to JS detection
+  // Also use pythonHits if pattern detection added hits (even without full analysis)
   const usePythonRhythm = rhythmAnalysisState === ANALYSIS_STATES.COMPLETE && pythonBpm;
-  const effectiveDrumHits = usePythonRhythm ? pythonHits : drumHits;
+  // Use hook's tracking OR check if any hits exist
+  const hasPatternHits = hasPatternHitsFromHook || Object.values(pythonHits || {}).some(arr => arr?.length > 0);
+  const effectiveDrumHits = (usePythonRhythm || hasPatternHits) ? pythonHits : drumHits;
   const effectiveTempo = usePythonRhythm ? pythonBpm : drumTempo;
   const effectiveTempoConfidence = usePythonRhythm ? pythonBpmConfidence : drumTempoConfidence;
 
@@ -971,7 +983,7 @@ function App() {
               }}
               onFindQuietHits={() => {
                 if (audioFile) {
-                  findQuietHits(audioFile, { startBar: 21, energyMultiplier: 0.3 });
+                  findQuietHits(audioFile, { startBar: 0, energyMultiplier: 0.5 });
                 }
               }}
               isFindingQuietHits={isFindingQuietHits}
@@ -1067,6 +1079,11 @@ function App() {
 
         {/* NEW: RhythmGridPro - DAW-style with Logic Pro principles */}
         <section className="rhythm-section">
+          {/* Debug: Show hit counts */}
+          <div style={{ background: '#333', padding: '5px 10px', fontSize: '12px', color: '#0f0' }}>
+            pythonHits: Perc={pythonHits?.perc?.length || 0} | Kick={pythonHits?.kick?.length || 0} |
+            hasPatternHits={hasPatternHits ? 'YES' : 'NO'} | hookFlag={hasPatternHitsFromHook ? 'YES' : 'NO'}
+          </div>
           <RhythmGridPro
             bpm={effectiveTempo || 120}
             downbeatTime={pythonDownbeats?.[0]?.time || 0}
@@ -1108,9 +1125,11 @@ function App() {
             }}
             onAnalyzeWithAI={() => {
               if (audioFile) {
-                analyzeRhythmFile(audioFile, { useAI: true });
+                analyzeWithAI(audioFile, { modelTier: 'free', useCache: true });
               }
             }}
+            isAiAnalyzing={isAiAnalyzing}
+            aiAnalysis={aiAnalysis}
             onVerifyHits={() => {
               if (audioFile) {
                 setShowVerificationPanel(true);
@@ -1118,10 +1137,16 @@ function App() {
             }}
             onFindQuietHits={() => {
               if (audioFile) {
-                findQuietHits(audioFile, { startBar: 21, energyMultiplier: 0.3 });
+                findQuietHits(audioFile, { startBar: 0, energyMultiplier: 0.5 });
               }
             }}
             isFindingQuietHits={isFindingQuietHits}
+            onDetectPatterns={() => {
+              if (audioFile) {
+                detectPatterns(audioFile, { instruments: 'perc,clap' });
+              }
+            }}
+            isDetectingPattern={isDetectingPattern}
             analysisSource={rhythmAnalysisSource}
             detectedGenre={rhythmDetectedGenre}
             genreConfidence={rhythmGenreConfidence}

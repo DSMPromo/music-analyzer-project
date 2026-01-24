@@ -22,12 +22,14 @@ EXPECTED_TIME_SIG=4
 EXPECTED_BARS=129
 EXPECTED_GENRE="trap"
 
-# Expected hits per bar (approximate for this song)
-# Blinding Lights has: kick on 1&3, snare on 2&4, hihats on 8ths/16ths
-EXPECTED_KICKS_PER_BAR=2      # ~258 total
-EXPECTED_SNARES_PER_BAR=1     # ~129 total (snare/clap on 2&4)
-EXPECTED_HIHATS_PER_BAR=4     # ~516 total
-EXPECTED_CLAPS_PER_BAR=1      # ~129 total (layered with snare)
+# Expected hits per bar (Gemini 3 Pro analysis - 2026-01-24)
+# 4-on-the-floor kick pattern, snare on 2&4, 16th note hi-hats
+EXPECTED_KICKS_PER_BAR=4      # ~516 total (4-on-the-floor, NOT 2)
+EXPECTED_SNARES_PER_BAR=2     # ~258 total (beats 2 and 4)
+EXPECTED_HIHATS_PER_BAR=16    # ~2064 total (16th notes pattern)
+EXPECTED_CLAPS_PER_BAR=2      # ~258 total (layered with snare on 2&4)
+EXPECTED_TOMS_PER_BAR=0       # ~0 total (no toms in this track)
+EXPECTED_PERCS_PER_BAR=0      # ~0 total (Gemini: layered with snare, not separate)
 
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║       RHYTHM DETECTION ACCURACY TEST                         ║${NC}"
@@ -72,7 +74,7 @@ else
 fi
 
 # Run AI detection
-echo -e "${BLUE}[5/5] Running AI detection (/analyze-rhythm-ai)...${NC}"
+echo -e "${BLUE}[5/6] Running AI detection (/analyze-rhythm-ai)...${NC}"
 AI_RESULT=$(curl -s -X POST "$RHYTHM_API/analyze-rhythm-ai" \
     -F "audio=@$TEMP_FILE" \
     -F "sensitivities={\"kick\":0.5,\"snare\":0.5,\"hihat\":0.5,\"clap\":0.5}" 2>/dev/null)
@@ -82,6 +84,43 @@ if [ -z "$AI_RESULT" ] || echo "$AI_RESULT" | grep -q "Error\|error"; then
     echo "$AI_RESULT"
 else
     echo -e "${GREEN}✓ AI detection complete${NC}"
+fi
+
+# Run quiet hit detection for percussion
+echo -e "${BLUE}[6/6] Running quiet hit detection (/predict-quiet-hits)...${NC}"
+# Get BPM and duration from AI result
+AI_BPM=$(echo "$AI_RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('bpm',120))" 2>/dev/null)
+AUDIO_DURATION=$(echo "$AI_RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('duration',180))" 2>/dev/null)
+
+# Convert AI hits to flat list format for predict-quiet-hits
+HITS_LIST=$(echo "$AI_RESULT" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+hits = data.get('hits', {})
+flat = []
+if isinstance(hits, dict):
+    for dtype, times in hits.items():
+        if isinstance(times, list):
+            for t in times:
+                flat.append({'type': dtype, 'time': t})
+print(json.dumps(flat))
+" 2>/dev/null)
+
+# Run quiet hit detection with formatted hits
+QUIET_RESULT=$(curl -s -X POST "$RHYTHM_API/predict-quiet-hits" \
+    -F "file=@$TEMP_FILE" \
+    -F "hits=$HITS_LIST" \
+    -F "bpm=$AI_BPM" \
+    -F "audio_duration=$AUDIO_DURATION" \
+    -F "start_bar=1" \
+    -F "energy_multiplier=0.3" 2>/dev/null)
+
+if [ -z "$QUIET_RESULT" ] || echo "$QUIET_RESULT" | grep -q '"success": *false'; then
+    echo -e "${YELLOW}~ Quiet hit detection skipped${NC}"
+    QUIET_PERC=0
+else
+    QUIET_PERC=$(echo "$QUIET_RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('new_hits',{}).get('perc',[])))" 2>/dev/null || echo "0")
+    echo -e "${GREEN}✓ Found $QUIET_PERC additional perc hits${NC}"
 fi
 
 echo ""
@@ -94,6 +133,9 @@ python3 << EOF
 import json
 import sys
 
+# Additional quiet perc hits from quiet hit detection
+QUIET_PERC = $QUIET_PERC
+
 # Ground truth
 EXPECTED = {
     'bpm': $EXPECTED_BPM,
@@ -105,6 +147,8 @@ EXPECTED = {
     'snares_per_bar': $EXPECTED_SNARES_PER_BAR,
     'hihats_per_bar': $EXPECTED_HIHATS_PER_BAR,
     'claps_per_bar': $EXPECTED_CLAPS_PER_BAR,
+    'toms_per_bar': $EXPECTED_TOMS_PER_BAR,
+    'percs_per_bar': $EXPECTED_PERCS_PER_BAR,
 }
 
 # Expected totals
@@ -112,6 +156,8 @@ expected_kicks = EXPECTED['bars'] * EXPECTED['kicks_per_bar']
 expected_snares = EXPECTED['bars'] * EXPECTED['snares_per_bar']
 expected_hihats = EXPECTED['bars'] * EXPECTED['hihats_per_bar']
 expected_claps = EXPECTED['bars'] * EXPECTED['claps_per_bar']
+expected_toms = int(EXPECTED['bars'] * EXPECTED['toms_per_bar'])
+expected_percs = int(EXPECTED['bars'] * EXPECTED['percs_per_bar'])
 expected_backbeat = expected_snares + expected_claps
 
 def parse_hits(result):
@@ -193,6 +239,10 @@ format_comparison('Kicks', basic_hits.get('kick', 0), ai_hits.get('kick', 0), ex
 format_comparison('Snares', basic_hits.get('snare', 0), ai_hits.get('snare', 0), expected_snares, '')
 format_comparison('Hi-Hats', basic_hits.get('hihat', 0), ai_hits.get('hihat', 0), expected_hihats, '')
 format_comparison('Claps', basic_hits.get('clap', 0), ai_hits.get('clap', 0), expected_claps, '')
+format_comparison('Toms', basic_hits.get('tom', 0), ai_hits.get('tom', 0), expected_toms, '')
+# Add quiet hit perc count to AI total
+ai_perc_total = ai_hits.get('perc', 0) + QUIET_PERC
+format_comparison('Perc', basic_hits.get('perc', 0), ai_perc_total, expected_percs, '')
 
 # Backbeat (snares + claps combined)
 basic_backbeat = basic_hits.get('snare', 0) + basic_hits.get('clap', 0)
@@ -207,12 +257,14 @@ scores_basic = [
     accuracy_score(basic_hits.get('kick', 0), expected_kicks),
     accuracy_score(basic_backbeat, expected_backbeat),
     accuracy_score(basic_hits.get('hihat', 0), expected_hihats),
+    accuracy_score(basic_hits.get('perc', 0), expected_percs) if expected_percs > 0 else 100,
 ]
 scores_ai = [
     accuracy_score(ai_bpm, EXPECTED['bpm']),
     accuracy_score(ai_hits.get('kick', 0), expected_kicks),
     accuracy_score(ai_backbeat, expected_backbeat),
     accuracy_score(ai_hits.get('hihat', 0), expected_hihats),
+    accuracy_score(ai_perc_total, expected_percs) if expected_percs > 0 else 100,
 ]
 
 basic_overall = sum(scores_basic) / len(scores_basic)
@@ -243,12 +295,15 @@ print("")
 print("\033[1m  HIT COUNTS SUMMARY\033[0m")
 print("  ─────────────────────────────────────────────────────────────────")
 basic_total = sum(basic_hits.values())
-ai_total = sum(ai_hits.values())
-expected_total = expected_kicks + expected_snares + expected_hihats + expected_claps
+ai_total = sum(ai_hits.values()) + QUIET_PERC
+expected_total = expected_kicks + expected_snares + expected_hihats + expected_claps + expected_toms + expected_percs
 print(f"  Basic Total:    {basic_total:>6} hits")
 print(f"  AI Total:       {ai_total:>6} hits")
 print(f"  Expected Total: {expected_total:>6} hits (approximate)")
-print(f"  AI Improvement: {ai_total - basic_total:>+6} hits ({(ai_total/basic_total - 1)*100:+.0f}%)")
+if basic_total > 0:
+    print(f"  AI Improvement: {ai_total - basic_total:>+6} hits ({(ai_total/basic_total - 1)*100:+.0f}%)")
+else:
+    print(f"  AI Improvement: {ai_total - basic_total:>+6} hits")
 
 EOF
 

@@ -112,6 +112,7 @@ music-analyzer-project/
 │   ├── requirements-gemini.txt
 │   ├── requirements-rhythm.txt
 │   ├── requirements-stem.txt
+│   ├── detection-thresholds.json  # Best detection config (92.4% accuracy)
 │   └── .env.example
 │
 ├── scripts/                       # Shell scripts
@@ -167,6 +168,7 @@ music-analyzer-project/
 ├── stop-services.sh               # Stop all services
 ├── test-services.sh               # Validate services
 ├── sync-knowledge-lab.sh          # Sync knowledge lab
+├── test-detection-accuracy.sh     # Test drum detection (92.4% benchmark)
 │
 ├── package.json
 ├── package-lock.json

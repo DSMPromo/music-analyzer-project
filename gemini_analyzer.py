@@ -844,6 +844,216 @@ def call_openrouter_text(prompt: str, model: str) -> str:
         raise HTTPException(status_code=500, detail=f'OpenRouter API error: {error_msg}')
 
 
+# =============================================================================
+# Pre-Detection Analysis Mode - For Rhythm Detection Integration
+# =============================================================================
+
+class DetectionPatternResult(BaseModel):
+    """AI analysis result for drum pattern detection configuration."""
+    kick_pattern: str = '4-on-the-floor'
+    kick_per_bar: int = 4
+    snare_pattern: str = 'beats 2 and 4'
+    snare_per_bar: int = 2
+    hihat_pattern: str = '8th notes'
+    hihat_per_bar: int = 8
+    clap_layered: bool = False
+    has_reverb: bool = False
+    genre: str = 'electronic'
+    confidence: float = 0.0
+    notes: str = ''
+
+
+def build_detection_prompt(metrics: AudioMetrics, bpm: float = None) -> str:
+    """Build prompt specifically for rhythm detection analysis."""
+    return f"""Analyze this spectrogram to configure drum detection parameters.
+
+{f"BPM: {bpm:.1f}" if bpm else ""}
+Duration: {metrics.duration_sec}s
+Spectral Centroid: {metrics.spectral_centroid_hz}Hz
+
+Return ONLY a JSON object with these fields:
+{{
+  "kick_pattern": "4-on-the-floor" | "half-time" | "trap" | "breakbeat",
+  "kick_per_bar": 1-8,
+  "snare_pattern": "beats 2 and 4" | "one-drop" | "trap rolls" | "breakbeat",
+  "snare_per_bar": 1-8,
+  "hihat_pattern": "8th notes" | "16th notes" | "open/closed" | "triplets",
+  "hihat_per_bar": 8 | 16 | 24 | 32,
+  "clap_layered": true if claps are layered with snare,
+  "has_reverb": true if snare/clap have reverb tails,
+  "genre": detected genre name,
+  "confidence": 0.0-1.0,
+  "notes": "brief pattern description"
+}}
+
+Focus on:
+1. Count visible hi-hat transients per bar (8=8th notes, 16=16th notes)
+2. Kick placement (every beat vs alternating)
+3. Snare/clap positioning and layering
+4. Reverb tails that may cause double-detection
+
+Return ONLY valid JSON."""
+
+
+def parse_detection_response(content: str) -> DetectionPatternResult:
+    """Parse Gemini response for detection pattern."""
+    result = DetectionPatternResult()
+
+    try:
+        # Clean response
+        content = content.strip()
+        if content.startswith('```json'):
+            content = content[7:]
+        elif content.startswith('```'):
+            content = content[3:]
+        if content.endswith('```'):
+            content = content[:-3]
+
+        # Find JSON
+        start = content.find('{')
+        end = content.rfind('}') + 1
+        if start >= 0 and end > start:
+            data = json.loads(content[start:end])
+
+            if 'kick_pattern' in data:
+                result.kick_pattern = data['kick_pattern']
+            if 'kick_per_bar' in data:
+                result.kick_per_bar = int(data['kick_per_bar'])
+            if 'snare_pattern' in data:
+                result.snare_pattern = data['snare_pattern']
+            if 'snare_per_bar' in data:
+                result.snare_per_bar = int(data['snare_per_bar'])
+            if 'hihat_pattern' in data:
+                result.hihat_pattern = data['hihat_pattern']
+            if 'hihat_per_bar' in data:
+                result.hihat_per_bar = int(data['hihat_per_bar'])
+            if 'clap_layered' in data:
+                result.clap_layered = bool(data['clap_layered'])
+            if 'has_reverb' in data:
+                result.has_reverb = bool(data['has_reverb'])
+            if 'genre' in data:
+                result.genre = data['genre']
+            if 'confidence' in data:
+                result.confidence = float(data['confidence'])
+            if 'notes' in data:
+                result.notes = str(data['notes'])
+    except Exception as e:
+        result.notes = f'Parse error: {e}'
+
+    return result
+
+
+@app.post('/analyze-for-detection')
+async def analyze_for_detection(
+    audio: UploadFile = File(...),
+    bpm: Optional[float] = Form(default=None),
+    model: Optional[str] = Form(default=None),
+):
+    """
+    Analyze audio for rhythm detection configuration.
+
+    Returns pattern analysis to configure detection thresholds:
+    - Hi-hat pattern (8th vs 16th notes)
+    - Kick pattern (4-on-the-floor vs half-time)
+    - Snare/clap layering detection
+    - Reverb detection for avoiding double-triggers
+
+    This is a specialized endpoint for the rhythm analyzer integration.
+    """
+    # Configure Gemini
+    configure_gemini()
+
+    # Validate file size
+    contents = await audio.read()
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f'File too large. Maximum size is {MAX_FILE_SIZE // (1024 * 1024)}MB'
+        )
+
+    # Save to temp file and load
+    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+        tmp.write(contents)
+        tmp_path = tmp.name
+
+    try:
+        # Load audio (only first 30 seconds for detection analysis)
+        y, sr = librosa.load(tmp_path, sr=44100, mono=False, duration=30)
+
+        # Calculate metrics
+        metrics = calculate_audio_metrics(y, sr)
+
+        # Generate spectrogram
+        spectrogram_b64, spectrogram_bytes = generate_spectrogram(y, sr)
+
+        # Get model
+        provider = api_settings.get('provider', 'google')
+        model_name = model or api_settings.get('default_model', DEFAULT_MODEL)
+
+        # Build detection-specific prompt
+        prompt = build_detection_prompt(metrics, bpm)
+
+        # Call AI
+        if provider == 'openrouter':
+            ai_content = call_openrouter(prompt, spectrogram_b64, model_name)
+        else:
+            gemini_model = genai.GenerativeModel(model_name)
+            spectrogram_image = Image.open(io.BytesIO(spectrogram_bytes))
+
+            response = gemini_model.generate_content(
+                [prompt, spectrogram_image],
+                generation_config=genai.GenerationConfig(
+                    temperature=0.3,
+                    max_output_tokens=1000,
+                )
+            )
+            ai_content = response.text
+
+        # Parse response
+        detection_result = parse_detection_response(ai_content)
+
+        return {
+            'model': model_name,
+            'pattern': detection_result.model_dump(),
+            'metrics': {
+                'duration': metrics.duration_sec,
+                'spectral_centroid': metrics.spectral_centroid_hz,
+            },
+            'spectrogram_base64': spectrogram_b64,
+        }
+
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+# Model cost indicator
+MODEL_COSTS = {
+    'gemini-2.0-flash': {'tier': 'free', 'cost_per_1k': 0.0},
+    'gemini-2.0-flash-exp:free': {'tier': 'free', 'cost_per_1k': 0.0},
+    'gemini-2.5-pro': {'tier': 'standard', 'cost_per_1k': 0.00125},
+    'gemini-3-pro-preview': {'tier': 'premium', 'cost_per_1k': 0.005},
+    'google/gemini-2.0-flash-exp:free': {'tier': 'free', 'cost_per_1k': 0.0},
+    'google/gemini-2.5-pro-preview-05-06': {'tier': 'standard', 'cost_per_1k': 0.00125},
+    'google/gemini-3-pro-preview': {'tier': 'premium', 'cost_per_1k': 0.005},
+}
+
+
+@app.get('/model-costs')
+async def get_model_costs():
+    """Get cost information for available models."""
+    return {
+        'costs': MODEL_COSTS,
+        'tiers': {
+            'free': 'No cost - good for testing and basic analysis',
+            'standard': 'Low cost - balanced accuracy and cost',
+            'premium': 'Higher cost - best accuracy for final analysis',
+        }
+    }
+
+
 if __name__ == '__main__':
     import uvicorn
 

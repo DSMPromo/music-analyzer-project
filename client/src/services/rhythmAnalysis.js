@@ -606,6 +606,118 @@ export function formatStepResultsForGrid(stepResult, bpm, beatsPerBar = 4) {
   return hits;
 }
 
+/**
+ * AI-Guided rhythm analysis using Gemini spectrogram analysis.
+ * Analyzes the spectrogram with AI first to configure detection parameters.
+ *
+ * @param {File|Blob} audioFile - The audio file to analyze
+ * @param {Object} options - Analysis options
+ * @param {boolean} options.useCache - Use cached AI analysis if available (default: true)
+ * @param {string} options.modelTier - Model tier: 'free', 'standard', or 'premium' (default: 'free')
+ * @param {boolean} options.forceReanalyze - Force new AI analysis even if cached (default: false)
+ * @returns {Promise<Object>} Analysis result with AI-guided detection
+ */
+export async function analyzeWithAIGuidance(audioFile, options = {}) {
+  const {
+    useCache = true,
+    modelTier = 'free',
+    forceReanalyze = false,
+  } = options;
+
+  // Convert if needed (AIFF, etc.)
+  const compatibleFile = await ensureCompatibleFormat(audioFile);
+
+  const formData = new FormData();
+  formData.append('audio', compatibleFile, compatibleFile.name || 'audio.wav');
+  formData.append('use_cache', useCache.toString());
+  formData.append('model_tier', modelTier);
+  formData.append('force_reanalyze', forceReanalyze.toString());
+
+  const response = await fetch(`${RHYTHM_API_URL}/analyze-with-ai`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'AI-guided analysis failed');
+  }
+
+  return response.json();
+}
+
+/**
+ * Get AI cache status and statistics.
+ * @returns {Promise<Object>} Cache status with entries and statistics
+ */
+export async function getAICacheStatus() {
+  const response = await fetch(`${RHYTHM_API_URL}/ai-cache-status`);
+  if (!response.ok) {
+    throw new Error('Failed to get AI cache status');
+  }
+  return response.json();
+}
+
+/**
+ * Clear a specific AI cache entry.
+ * @param {string} cacheKey - The cache key to delete
+ * @returns {Promise<Object>} Deletion result
+ */
+export async function deleteAICacheEntry(cacheKey) {
+  const response = await fetch(`${RHYTHM_API_URL}/ai-cache/${cacheKey}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error('Failed to delete cache entry');
+  }
+  return response.json();
+}
+
+/**
+ * Clear all AI cache entries.
+ * @returns {Promise<Object>} Clear result with count
+ */
+export async function clearAICache() {
+  const response = await fetch(`${RHYTHM_API_URL}/ai-cache`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error('Failed to clear AI cache');
+  }
+  return response.json();
+}
+
+/**
+ * Detect patterns from spectrogram using AI.
+ * AI identifies the PATTERN, then code GENERATES all timestamps.
+ *
+ * @param {File|Blob} audioFile - The audio file to analyze
+ * @param {Object} options - Detection options
+ * @param {string} options.instruments - Comma-separated list of instruments to detect (default: 'perc,clap')
+ * @returns {Promise<Object>} Pattern detection result with generated hits
+ */
+export async function detectPatternFromSpectrogram(audioFile, options = {}) {
+  const { instruments = 'perc,clap' } = options;
+
+  const compatibleFile = await ensureCompatibleFormat(audioFile);
+
+  const formData = new FormData();
+  formData.append('audio', compatibleFile, compatibleFile.name || 'audio.wav');
+  formData.append('instruments', instruments);
+
+  const response = await fetch(`${RHYTHM_API_URL}/detect-pattern`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Pattern detection failed');
+  }
+
+  return response.json();
+}
+
 // Export service object for convenience
 export const rhythmAnalysisService = {
   checkHealth: checkRhythmServiceHealth,
@@ -624,5 +736,11 @@ export const rhythmAnalysisService = {
   matchPattern,
   flattenHits,
   predictQuietHits,
+  // AI-Guided analysis
+  analyzeWithAIGuidance,
+  getAICacheStatus,
+  deleteAICacheEntry,
+  clearAICache,
+  detectPatternFromSpectrogram,
   formatQuietHitsForGrid,
 };

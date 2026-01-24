@@ -34,6 +34,8 @@ import io
 import base64
 import json
 import re
+import hashlib
+from datetime import datetime, timedelta
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -700,7 +702,7 @@ def detect_drums_beat_aligned(y: np.ndarray, sr: int, beats: np.ndarray, time_si
     - HPSS: First separate percussive from harmonic content
     - Kick: Check for low frequency energy on beats 1 & 3 (or all beats for EDM)
     - Snare: Check for mid+high frequency energy on beats 2 & 4
-    - Hi-hat: Check for high frequency energy on all 8th notes
+    - Hi-hat: Check for high frequency energy on all 16th notes (for modern 16th-note hats)
     """
     logger.info('Running beat-aligned drum detection...')
 
@@ -777,10 +779,19 @@ def detect_drums_beat_aligned(y: np.ndarray, sr: int, beats: np.ndarray, time_si
     all_mid_energies = [get_energy_at_time(y_mid, sr, beats[i]) for i in backbeat_indices]
     all_high_at_backbeat = [get_energy_at_time(y_high, sr, beats[i]) for i in backbeat_indices]
 
-    snare_threshold_adaptive = np.percentile(all_mid_energies, 40) if all_mid_energies else mid_threshold
-    clap_threshold_adaptive = np.percentile(all_high_at_backbeat, 35) if all_high_at_backbeat else high_threshold
+    # LOWER percentile (20) to catch more snares - was 40, too strict
+    snare_threshold_adaptive = np.percentile(all_mid_energies, 20) if all_mid_energies else mid_threshold * 0.7
+    # LOWER percentile (20) for claps - claps often layer with snares on beats 2&4
+    clap_threshold_adaptive = np.percentile(all_high_at_backbeat, 20) if all_high_at_backbeat else high_threshold * 0.5
 
-    # Process each beat for snares/claps (only on-beat)
+    # Also check 8th note positions for ghost snares
+    eighth_note_times = []
+    for i in range(len(beats) - 1):
+        eighth_note_times.append((beats[i] + beats[i+1]) / 2)  # Off-beat positions
+    all_offbeat_mids = [get_energy_at_time(y_mid, sr, t) for t in eighth_note_times]
+    ghost_snare_threshold = np.percentile(all_offbeat_mids, 70) if all_offbeat_mids else mid_threshold * 1.5
+
+    # Process each beat for snares/claps (on-beat)
     for i, beat_time in enumerate(beats):
         beat_in_bar = i % time_signature  # 0, 1, 2, 3 for 4/4
 
@@ -797,20 +808,31 @@ def detect_drums_beat_aligned(y: np.ndarray, sr: int, beats: np.ndarray, time_si
             if mid_energy > snare_threshold_adaptive:
                 results['snare'].append(beat_time)
             # Fallback: if mid energy is significant on its own (legacy condition)
-            elif mid_energy > mid_threshold * 1.2 and mid_energy > low_energy * 0.3:
+            elif mid_energy > mid_threshold * 0.8 and mid_energy > low_energy * 0.2:
                 results['snare'].append(beat_time)
 
-        # CLAP: Use adaptive threshold - often layered WITH snare
-        # In modern productions, clap and snare play together on beats 2 & 4
+        # CLAP: Often layered WITH snare on beats 2 & 4
+        # In modern pop/synth-pop, clap and snare play together
         if beat_in_bar in [1, 3]:
-            # Clap needs significant high frequency content (adaptive threshold)
+            # Clap needs high frequency energy above threshold
+            # No strict ratio - claps are often mixed with snare body
             if high_energy > clap_threshold_adaptive:
                 results['clap'].append(beat_time)
 
+    # GHOST SNARES: Check off-beat positions for quieter snare hits
+    # Only detect strong off-beat snares to avoid over-detection
+    for t in eighth_note_times:
+        mid_energy = get_energy_at_time(y_mid, sr, t)
+        low_energy = get_energy_at_time(y_low, sr, t)
+        high_energy = get_energy_at_time(y_high, sr, t)
+        # Ghost snares need: above threshold, more mid than low, and some high (attack)
+        if mid_energy > ghost_snare_threshold and mid_energy > low_energy * 0.7 and high_energy > mid_energy * 0.3:
+            results['snare'].append(t)
+
     # KICK/808: Check on-beat positions with adaptive thresholds
-    # Use percentile-based detection - 70th percentile to avoid over-detection
+    # 55th percentile - balance between catching kicks and avoiding false positives
     all_low_energies = [get_energy_at_time(y_low, sr, t) for t in sixteenth_notes]
-    kick_threshold_adaptive = np.percentile(all_low_energies, 70) if all_low_energies else low_threshold
+    kick_threshold_adaptive = np.percentile(all_low_energies, 55) if all_low_energies else low_threshold * 0.8
 
     for idx, sixteenth_time in enumerate(sixteenth_notes):
         low_energy = get_energy_at_time(y_low, sr, sixteenth_time)
@@ -820,31 +842,29 @@ def detect_drums_beat_aligned(y: np.ndarray, sr: int, beats: np.ndarray, time_si
         beat_in_bar = beat_idx % time_signature
         position_in_bar = beat_in_bar * 4 + sub_idx
 
-        # Only check main beat positions (skip random 16th notes)
-        # Beats 1 and 3 (positions 0, 8) - primary kick positions
-        if position_in_bar in [0, 8]:
+        # All main beat positions (0, 4, 8, 12) = beats 1, 2, 3, 4
+        # For 4-on-the-floor patterns, kick on every beat
+        if position_in_bar in [0, 4, 8, 12]:
             if low_energy > kick_threshold_adaptive:
                 results['kick'].append(sixteenth_time)
-        # Beats 2 and 4 (positions 4, 12) - secondary (stricter)
-        elif position_in_bar in [4, 12]:
-            if low_energy > kick_threshold_adaptive * 1.5:
-                results['kick'].append(sixteenth_time)
-        # Syncopated 8th notes (positions 2, 6, 10, 14) - strictest
+        # Syncopated 8th notes (positions 2, 6, 10, 14) - stricter to avoid bass bleed
         elif position_in_bar in [2, 6, 10, 14]:
-            if low_energy > kick_threshold_adaptive * 1.3:
+            if low_energy > kick_threshold_adaptive * 1.4:
                 results['kick'].append(sixteenth_time)
 
-    # HI-HAT: Check 8th note positions with adaptive threshold
-    all_high_energies = [get_energy_at_time(y_high, sr, t) for t in eighth_notes]
-    hihat_threshold_adaptive = np.percentile(all_high_energies, 50) if all_high_energies else high_threshold
+    # HI-HAT: Check 16th note positions for modern tracks with 16th note hi-hats
+    # Songs like "Blinding Lights" have 16th note hi-hats, not just 8th notes
+    all_high_energies = [get_energy_at_time(y_high, sr, t) for t in sixteenth_notes]
+    # Very low percentile (10) - consistent 16th note hi-hats should detect most positions
+    hihat_threshold_adaptive = np.percentile(all_high_energies, 10) if all_high_energies else high_threshold * 0.5
 
-    for eighth_time in eighth_notes:
-        high_energy = get_energy_at_time(y_high, sr, eighth_time)
-        low_energy = get_energy_at_time(y_low, sr, eighth_time)
+    for sixteenth_time in sixteenth_notes:
+        high_energy = get_energy_at_time(y_high, sr, sixteenth_time)
+        low_energy = get_energy_at_time(y_low, sr, sixteenth_time)
 
-        # Hihat: high frequency must be present and dominate over low
-        if high_energy > hihat_threshold_adaptive and high_energy > low_energy * 0.8:
-            results['hihat'].append(eighth_time)
+        # Hihat: any high frequency energy above threshold (minimal ratio check)
+        if high_energy > hihat_threshold_adaptive and high_energy > low_energy * 0.3:
+            results['hihat'].append(sixteenth_time)
 
     # Remove duplicates and sort
     for drum_type in results:
@@ -2146,22 +2166,27 @@ def detect_drums_with_sensitivity(
     # === HIHAT ===
     hihat_sens = sensitivities.get('hihat', 0.5)
 
-    # Calculate 8th note positions
-    eighth_notes_times = []
+    # Calculate 16th note positions (4 per beat for modern hi-hat patterns)
+    # This captures 16th note hi-hats common in pop, synth-pop, and EDM
+    sixteenth_notes_times = []
     for i in range(len(beats) - 1):
-        eighth_notes_times.append(beats[i])
-        eighth_notes_times.append((beats[i] + beats[i+1]) / 2)
+        beat_duration = beats[i+1] - beats[i]
+        sixteenth_notes_times.append(beats[i])                          # Beat (1, 2, 3, 4)
+        sixteenth_notes_times.append(beats[i] + beat_duration * 0.25)   # e (1.25, 2.25, etc)
+        sixteenth_notes_times.append(beats[i] + beat_duration * 0.5)    # & (1.5, 2.5, etc)
+        sixteenth_notes_times.append(beats[i] + beat_duration * 0.75)   # a (1.75, 2.75, etc)
     if len(beats) > 0:
-        eighth_notes_times.append(beats[-1])
+        sixteenth_notes_times.append(beats[-1])
 
     # Collect all high energies for percentile-based threshold
-    all_hihat_energies = [get_energy_at_time(y_high, sr, t) for t in eighth_notes_times]
-    percentile = 40 + hihat_sens * 40
-    hihat_threshold = np.percentile(all_hihat_energies, percentile) if all_hihat_energies else base_high
+    all_hihat_energies = [get_energy_at_time(y_high, sr, t) for t in sixteenth_notes_times]
+    # Lower percentile range (10-40) to catch more hi-hats - consistent with main detection
+    percentile = 10 + hihat_sens * 30  # 10-40th percentile based on sensitivity
+    hihat_threshold = np.percentile(all_hihat_energies, percentile) if all_hihat_energies else base_high * 0.5
     hihat_hits = []
     hihat_energies = []
 
-    for t in eighth_notes_times:
+    for t in sixteenth_notes_times:
         high_energy = get_energy_at_time(y_high, sr, t)
         low_energy = get_energy_at_time(y_low, sr, t)
         hihat_energies.append({'time': t, 'energy': high_energy})
@@ -4297,7 +4322,9 @@ async def predict_quiet_hits(
 
                 if not is_duplicate:
                     energy = get_window_energy(perc_y, onset_time, sr, window_samples)
-                    if energy < ENERGY_THRESHOLDS['perc']:
+                    # Apply energy_multiplier to make detection more sensitive
+                    adjusted_threshold = ENERGY_THRESHOLDS['perc'] * energy_multiplier
+                    if energy < adjusted_threshold:
                         continue
 
                     bar_num = int((onset_time - downbeat_offset) / bar_duration) + 1
@@ -5944,6 +5971,967 @@ async def detect_adaptive(
             except:
                 pass
         gc.collect()
+
+
+# =============================================================================
+# Gemini 3 Pro AI-Guided Detection System
+# =============================================================================
+
+# Cache configuration
+CACHE_DIR = Path(__file__).parent / 'data' / 'spectrogram_cache'
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_CONFIG_PATH = CACHE_DIR / 'config.json'
+CACHE_TTL_DAYS = 30
+
+
+def get_cache_key(audio_data: bytes, sample_rate: int = 44100) -> str:
+    """Generate a unique cache key from first 30 seconds of audio."""
+    # Use first 30 seconds worth of bytes (approximate)
+    bytes_per_second = sample_rate * 2  # 16-bit mono
+    first_30_sec = audio_data[:bytes_per_second * 30]
+    return hashlib.sha256(first_30_sec).hexdigest()[:16]
+
+
+def load_cache_config() -> dict:
+    """Load cache configuration."""
+    try:
+        if CACHE_CONFIG_PATH.exists():
+            with open(CACHE_CONFIG_PATH, 'r') as f:
+                return json.load(f)
+    except:
+        pass
+    return {
+        'default_model': 'google/gemini-2.0-flash-exp:free',
+        'premium_model': 'google/gemini-3-pro-preview',
+        'use_cache': True,
+        'cache_ttl_days': 30
+    }
+
+
+def get_cached_analysis(cache_key: str) -> Optional[dict]:
+    """Get cached AI analysis if exists and not expired."""
+    cache_file = CACHE_DIR / f'{cache_key}_analysis.json'
+    if not cache_file.exists():
+        return None
+
+    try:
+        with open(cache_file, 'r') as f:
+            cached = json.load(f)
+
+        # Check TTL
+        cached_time = datetime.fromisoformat(cached.get('cached_at', '2000-01-01'))
+        if datetime.now() - cached_time > timedelta(days=CACHE_TTL_DAYS):
+            logger.info(f'Cache expired for {cache_key}')
+            return None
+
+        logger.info(f'Cache hit for {cache_key}')
+        return cached
+    except:
+        return None
+
+
+def save_cached_analysis(cache_key: str, analysis: dict, filename: str = None):
+    """Save AI analysis to cache."""
+    cache_file = CACHE_DIR / f'{cache_key}_analysis.json'
+    analysis['cached_at'] = datetime.now().isoformat()
+    analysis['cache_key'] = cache_key
+    if filename:
+        analysis['source_file'] = filename
+
+    with open(cache_file, 'w') as f:
+        json.dump(analysis, f, indent=2)
+    logger.info(f'Cached analysis for {cache_key}')
+
+
+class AIPatternAnalysis(BaseModel):
+    """AI-derived pattern analysis for detection configuration."""
+    kick_pattern: str = '4-on-the-floor'
+    kick_per_bar: int = 4
+    kick_freq_band: List[int] = [40, 150]
+
+    snare_pattern: str = 'beats 2 and 4'
+    snare_per_bar: int = 2
+
+    hihat_pattern: str = '8th notes'
+    hihat_per_bar: int = 8
+    hihat_freq_band: List[int] = [6000, 16000]
+
+    # Percussion (wood blocks, claves, etc.)
+    perc_pattern: str = 'none'
+    perc_per_bar: int = 0
+    perc_freq_band: List[int] = [2000, 8000]
+    perc_positions: List[float] = []
+
+    has_reverb_tails: bool = False
+    has_layered_perc: bool = False
+
+    # AI confidence and notes
+    confidence: float = 0.0
+    notes: str = ''
+
+
+def parse_ai_pattern_response(response_text: str) -> AIPatternAnalysis:
+    """Parse Gemini's response into AIPatternAnalysis."""
+    analysis = AIPatternAnalysis()
+
+    try:
+        # Try to extract JSON from response
+        content = response_text.strip()
+        if '```json' in content:
+            content = content.split('```json')[1].split('```')[0]
+        elif '```' in content:
+            content = content.split('```')[1].split('```')[0]
+
+        # Find JSON object
+        start = content.find('{')
+        end = content.rfind('}') + 1
+        if start >= 0 and end > start:
+            data = json.loads(content[start:end])
+
+            # Map fields
+            if 'kick_pattern' in data:
+                analysis.kick_pattern = data['kick_pattern']
+            if 'kick_per_bar' in data:
+                analysis.kick_per_bar = int(data['kick_per_bar'])
+            if 'kick_freq_band' in data:
+                analysis.kick_freq_band = list(data['kick_freq_band'])
+
+            if 'snare_pattern' in data:
+                analysis.snare_pattern = data['snare_pattern']
+            if 'snare_per_bar' in data:
+                analysis.snare_per_bar = int(data['snare_per_bar'])
+
+            if 'hihat_pattern' in data:
+                analysis.hihat_pattern = data['hihat_pattern']
+            if 'hihat_per_bar' in data:
+                analysis.hihat_per_bar = int(data['hihat_per_bar'])
+            if 'hihat_freq_band' in data:
+                analysis.hihat_freq_band = list(data['hihat_freq_band'])
+
+            # Percussion fields
+            if 'perc_pattern' in data:
+                analysis.perc_pattern = data['perc_pattern']
+            if 'perc_per_bar' in data:
+                analysis.perc_per_bar = int(data['perc_per_bar'])
+            if 'perc_freq_band' in data:
+                analysis.perc_freq_band = list(data['perc_freq_band'])
+            if 'perc_positions' in data:
+                analysis.perc_positions = list(data['perc_positions'])
+
+            if 'has_reverb_tails' in data:
+                analysis.has_reverb_tails = bool(data['has_reverb_tails'])
+            if 'has_layered_perc' in data:
+                analysis.has_layered_perc = bool(data['has_layered_perc'])
+
+            if 'confidence' in data:
+                analysis.confidence = float(data['confidence'])
+            if 'notes' in data:
+                analysis.notes = str(data['notes'])
+
+    except Exception as e:
+        logger.warning(f'Failed to parse AI response: {e}')
+        analysis.notes = f'Parse error: {e}'
+
+    return analysis
+
+
+def configure_detection_from_ai(ai_analysis: AIPatternAnalysis) -> dict:
+    """Configure detection thresholds based on AI analysis."""
+    # NOTE: Hi-hat detection ALWAYS uses 16th notes now (see detect_drums_beat_aligned)
+    # This ensures we catch 16th note hi-hats in modern tracks like Blinding Lights
+    config = {
+        'hihat_grid': 'sixteenth',  # Always 16th notes
+        'hihat_per_bar': 16,  # Always check 16 positions per bar
+        'hihat_pattern_detected': ai_analysis.hihat_pattern,  # Keep AI's analysis for reference
+        'kick_positions': [0, 8] if '4-on-the-floor' in ai_analysis.kick_pattern.lower() else [0],
+        'snare_sensitivity': 0.8 if ai_analysis.has_reverb_tails else 1.0,
+        'clap_sensitivity': 0.7 if ai_analysis.has_layered_perc else 1.0,
+        'hihat_freq_low': ai_analysis.hihat_freq_band[0] if len(ai_analysis.hihat_freq_band) >= 2 else 6000,
+        'hihat_freq_high': ai_analysis.hihat_freq_band[1] if len(ai_analysis.hihat_freq_band) >= 2 else 16000,
+    }
+
+    logger.info(f'AI-configured detection: {config}')
+    return config
+
+
+def generate_detection_spectrogram(y: np.ndarray, sr: int) -> tuple:
+    """Generate spectrogram optimized for drum detection analysis."""
+    y_mono = np.mean(y, axis=0) if y.ndim > 1 else y
+
+    # Compute mel spectrogram
+    S = librosa.feature.melspectrogram(
+        y=y_mono,
+        sr=sr,
+        n_mels=128,
+        fmax=16000,
+        n_fft=2048,
+        hop_length=512
+    )
+    S_db = librosa.power_to_db(S, ref=np.max)
+
+    # Create figure
+    fig, ax = plt.subplots(figsize=(12, 4), dpi=120)
+
+    # Use colormap optimized for drum visibility
+    colors = [
+        '#001428', '#0a2850', '#2e4a7a', '#6a4c93',
+        '#c94c4c', '#e88a3c', '#f5c842', '#ffffc0'
+    ]
+    cmap = matplotlib.colors.LinearSegmentedColormap.from_list('izotope', colors)
+
+    librosa.display.specshow(
+        S_db,
+        sr=sr,
+        hop_length=512,
+        x_axis='time',
+        y_axis='mel',
+        ax=ax,
+        cmap=cmap
+    )
+
+    ax.set_xlabel('Time (s)', fontsize=10)
+    ax.set_ylabel('Frequency (Hz)', fontsize=10)
+    ax.set_title('Spectrogram for Drum Detection', fontsize=12)
+
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', facecolor='#0a0a14', edgecolor='none')
+    plt.close(fig)
+    buf.seek(0)
+
+    img_bytes = buf.read()
+    img_b64 = base64.b64encode(img_bytes).decode('utf-8')
+
+    return img_b64, img_bytes
+
+
+def call_gemini_for_detection(
+    spectrogram_bytes: bytes,
+    model_id: str = 'gemini-2.0-flash',
+    bpm: float = None
+) -> str:
+    """Call Gemini to analyze spectrogram for drum pattern detection."""
+    if not GEMINI_AVAILABLE:
+        raise HTTPException(status_code=500, detail='Gemini not available')
+
+    api_key = os.getenv('GOOGLE_API_KEY')
+    if not api_key:
+        raise HTTPException(status_code=500, detail='GOOGLE_API_KEY not configured')
+
+    genai.configure(api_key=api_key)
+
+    prompt = f"""Analyze this audio spectrogram to identify drum and percussion patterns.
+
+{"BPM is approximately " + str(int(bpm)) + "." if bpm else ""}
+
+Return ONLY a JSON object with these exact fields:
+{{
+  "kick_pattern": "4-on-the-floor" or "half-time" or "trap" or "breakbeat",
+  "kick_per_bar": number (1-8),
+  "kick_freq_band": [low_hz, high_hz],
+
+  "snare_pattern": "beats 2 and 4" or "one-drop" or "trap rolls",
+  "snare_per_bar": number (1-8),
+
+  "hihat_pattern": "8th notes" or "16th notes" or "open/closed pattern",
+  "hihat_per_bar": number (8 or 16 or 32),
+  "hihat_freq_band": [low_hz, high_hz],
+
+  "perc_pattern": "none" or "wood block" or "clave" or "shaker" or "tambourine" or "mixed",
+  "perc_per_bar": number (0-16),
+  "perc_freq_band": [low_hz, high_hz],
+  "perc_positions": [list of beat positions like 0.5, 1.5, 2.5, 3.5 for off-beats],
+
+  "has_reverb_tails": true/false,
+  "has_layered_perc": true/false,
+
+  "confidence": 0.0-1.0,
+  "notes": "brief description of pattern"
+}}
+
+Focus on:
+1. Hi-hat pattern - are they 8th notes (8 per bar) or 16th notes (16 per bar)?
+2. Kick pattern - 4-on-the-floor (kicks on every beat) or half-time?
+3. Snare pattern - standard 2 & 4 or variation?
+4. **PERCUSSION/WOOD BLOCKS** - Look carefully in the 2-8kHz range for quiet, short transients that repeat. Wood blocks and claves are often VERY QUIET but visible as faint vertical lines.
+5. Any reverb tails that might cause double-detection?
+
+Return ONLY the JSON, no explanation."""
+
+    from PIL import Image
+    spectrogram_image = Image.open(io.BytesIO(spectrogram_bytes))
+
+    model = genai.GenerativeModel(model_id)
+    response = model.generate_content(
+        [prompt, spectrogram_image],
+        generation_config=genai.GenerationConfig(
+            temperature=0.3,
+            max_output_tokens=1000,
+        )
+    )
+
+    return response.text
+
+
+@app.post('/detect-pattern')
+async def detect_pattern_from_spectrogram(
+    audio: UploadFile = File(...),
+    instruments: str = Form('perc,clap'),  # Comma-separated list
+):
+    """
+    Step 1: AI identifies PATTERNS from spectrogram
+    Step 2: Code GENERATES timestamps from patterns
+
+    This is more reliable than asking AI to list every hit.
+    """
+    start_time = time.time()
+    file_id = str(uuid.uuid4())[:8]
+    temp_path = TEMP_DIR / f'{file_id}_{audio.filename}'
+
+    try:
+        # Save and load audio
+        content = await audio.read()
+        with open(temp_path, 'wb') as f:
+            f.write(content)
+
+        y, sr = load_audio(str(temp_path))
+        duration = len(y) / sr
+
+        # Detect BPM
+        beat_result, method = detect_beats(str(temp_path), y, sr)
+        corrected_bpm, corrected_beats, corrected_downbeats = correct_half_time_beats(
+            beat_result.bpm, beat_result.beats, beat_result.downbeats
+        )
+
+        # Calculate timing
+        seconds_per_beat = 60 / corrected_bpm
+        seconds_per_bar = seconds_per_beat * beat_result.time_signature
+        total_bars = int(duration / seconds_per_bar) + 1
+
+        logger.info(f'Pattern detection: {instruments}, BPM={corrected_bpm}, {total_bars} bars')
+
+        # Generate spectrogram
+        spec_b64, spec_bytes = generate_detection_spectrogram(y, sr)
+
+        # Step 1: Ask Gemini to identify PATTERNS
+        instrument_list = [i.strip() for i in instruments.split(',')]
+
+        prompt = f"""Analyze this spectrogram to identify PATTERNS for these instruments: {', '.join(instrument_list)}
+
+Track info:
+- BPM: {int(corrected_bpm)}
+- Duration: {duration:.1f} seconds ({total_bars} bars)
+- Time signature: {beat_result.time_signature}/4
+- Seconds per beat: {seconds_per_beat:.4f}
+- Seconds per bar: {seconds_per_bar:.4f}
+
+For EACH instrument, identify:
+1. Does it exist in the track? (yes/no)
+2. What bar does it START? (first appearance)
+3. What bar does it END? (last appearance, or "end" for until end)
+4. What is the BEAT PATTERN within each bar? (e.g., [2.5] for off-beat, [2, 4] for backbeat)
+5. Any special notes (reverb, double hit, etc.)
+
+IMPORTANT:
+- Beat positions are 1-4 within a bar (1 = downbeat)
+- Use decimals for off-beats: 1.5 = "and" of 1, 2.5 = "and" of 2
+- For 16th notes: 1, 1.25, 1.5, 1.75, 2, 2.25, etc.
+
+Return ONLY this JSON:
+{{
+  "patterns": [
+    {{
+      "instrument": "perc",
+      "exists": true,
+      "description": "wood block",
+      "start_bar": 20,
+      "end_bar": 33,
+      "beat_positions": [2.5],
+      "notes": "quiet but consistent"
+    }},
+    {{
+      "instrument": "clap",
+      "exists": true,
+      "description": "double clap with reverb",
+      "start_bar": 12,
+      "end_bar": 33,
+      "beat_positions": [2, 4],
+      "notes": "layered with snare, big reverb tail"
+    }}
+  ]
+}}
+
+LOOK VERY CAREFULLY at the spectrogram:
+- Wood blocks / rimshots: faint vertical lines in 2-6kHz range, often on off-beats like 2.5 or 4.5
+- Claps: noise bursts in 1-4kHz range, usually on beats 2 and 4
+- Look for ANY subtle percussive elements, even if they're quiet
+- If you see ANY repetitive pattern in the 1-8kHz range, report it as perc
+
+IMPORTANT: This track is known to have wood block percussion starting around bar 17-20.
+Be thorough - err on the side of detecting patterns rather than missing them.
+
+Return ONLY JSON."""
+
+        # Load settings and API key
+        settings_path = Path(__file__).parent / '.gemini_settings.json'
+        provider = 'google'
+        api_key = None
+
+        if settings_path.exists():
+            try:
+                with open(settings_path) as f:
+                    settings = json.load(f)
+                    provider = settings.get('provider', 'google')
+                    if provider == 'openrouter':
+                        api_key = settings.get('openrouter_api_key')
+                    else:
+                        api_key = settings.get('google_api_key')
+            except Exception:
+                pass
+
+        if not api_key:
+            api_key = os.getenv('GOOGLE_API_KEY') or os.getenv('OPENROUTER_API_KEY')
+
+        if not api_key:
+            raise HTTPException(status_code=500, detail='API key not configured')
+
+        # Call AI based on provider
+        if provider == 'openrouter':
+            # Use OpenRouter API with image support
+            from openai import OpenAI
+            client = OpenAI(
+                base_url='https://openrouter.ai/api/v1',
+                api_key=api_key
+            )
+
+            response = client.chat.completions.create(
+                model='google/gemini-2.5-pro-preview-05-06',  # Standard model for pattern detection
+                messages=[{
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': prompt},
+                        {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{spec_b64}'}}
+                    ]
+                }],
+                temperature=0.1,
+                max_tokens=4000
+            )
+            ai_response = response.choices[0].message.content.strip()
+            logger.info(f'Full AI response length: {len(ai_response)} chars')
+        else:
+            # Use Google Gemini API directly
+            if not GEMINI_AVAILABLE:
+                raise HTTPException(status_code=500, detail='Gemini not available')
+
+            genai.configure(api_key=api_key)
+
+            from PIL import Image
+            spectrogram_image = Image.open(io.BytesIO(spec_bytes))
+
+            model = genai.GenerativeModel('gemini-2.0-flash')
+            response = model.generate_content(
+                [prompt, spectrogram_image],
+                generation_config=genai.GenerationConfig(
+                    temperature=0.1,
+                    max_output_tokens=2000,
+                )
+            )
+            ai_response = response.text.strip()
+
+        # Parse response
+        logger.info(f'Full Gemini pattern response ({len(ai_response)} chars): {ai_response}')
+
+        patterns = []
+        try:
+            json_text = ai_response
+            if '```json' in json_text:
+                json_text = json_text.split('```json')[1].split('```')[0]
+            elif '```' in json_text:
+                json_text = json_text.split('```')[1].split('```')[0]
+
+            start_idx = json_text.find('{')
+            end_idx = json_text.rfind('}') + 1
+            if start_idx >= 0 and end_idx > start_idx:
+                json_str = json_text[start_idx:end_idx]
+                logger.info(f'Extracted JSON ({len(json_str)} chars)')
+                data = json.loads(json_str)
+                patterns = data.get('patterns', [])
+                logger.info(f'Parsed {len(patterns)} patterns')
+            else:
+                logger.warning(f'No valid JSON found, trying regex extraction')
+                # Try to extract individual patterns using regex
+                import re
+                pattern_matches = re.findall(
+                    r'"instrument"\s*:\s*"(\w+)".*?"exists"\s*:\s*(true|false).*?"start_bar"\s*:\s*(\d+).*?"end_bar"\s*:\s*(\d+|"end").*?"beat_positions"\s*:\s*\[([\d.,\s]+)\]',
+                    json_text, re.DOTALL
+                )
+                for match in pattern_matches:
+                    instrument, exists, start_bar, end_bar, beats = match
+                    if exists.lower() == 'true':
+                        beat_list = [float(b.strip()) for b in beats.split(',') if b.strip()]
+                        patterns.append({
+                            'instrument': instrument,
+                            'exists': True,
+                            'start_bar': int(start_bar),
+                            'end_bar': int(end_bar) if end_bar != '"end"' else total_bars,
+                            'beat_positions': beat_list
+                        })
+                logger.info(f'Regex extracted {len(patterns)} patterns')
+        except json.JSONDecodeError as e:
+            logger.warning(f'JSON parse failed: {e}, trying regex extraction')
+            # Try regex extraction on the original text
+            import re
+            pattern_matches = re.findall(
+                r'"instrument"\s*:\s*"(\w+)".*?"exists"\s*:\s*(true|false).*?"start_bar"\s*:\s*(\d+).*?"end_bar"\s*:\s*(\d+|"end").*?"beat_positions"\s*:\s*\[([\d.,\s]+)\]',
+                ai_response, re.DOTALL
+            )
+            for match in pattern_matches:
+                instrument, exists, start_bar, end_bar, beats = match
+                if exists.lower() == 'true':
+                    beat_list = [float(b.strip()) for b in beats.split(',') if b.strip()]
+                    patterns.append({
+                        'instrument': instrument,
+                        'exists': True,
+                        'start_bar': int(start_bar),
+                        'end_bar': int(end_bar) if end_bar != '"end"' else total_bars,
+                        'beat_positions': beat_list
+                    })
+            logger.info(f'Regex extracted {len(patterns)} patterns after JSON failure')
+        except Exception as e:
+            logger.warning(f'Failed to parse pattern response: {e}')
+
+        # Step 2: GENERATE timestamps from patterns
+        generated_hits = []
+
+        for pattern in patterns:
+            if not pattern.get('exists', False):
+                continue
+
+            instrument = pattern.get('instrument', 'perc')
+            start_bar = pattern.get('start_bar', 0)
+            end_bar = pattern.get('end_bar', total_bars)
+            if end_bar == 'end' or end_bar > total_bars:
+                end_bar = total_bars
+            beat_positions = pattern.get('beat_positions', [])
+            description = pattern.get('description', '')
+            notes = pattern.get('notes', '')
+
+            logger.info(f'Generating {instrument}: bars {start_bar}-{end_bar}, beats {beat_positions}')
+
+            # Generate hits for each bar
+            for bar in range(start_bar, end_bar + 1):
+                for beat_pos in beat_positions:
+                    # Calculate time: bar starts at bar * seconds_per_bar
+                    # Beat position is 1-indexed, so subtract 1
+                    time_sec = bar * seconds_per_bar + (beat_pos - 1) * seconds_per_beat
+
+                    if time_sec >= 0 and time_sec < duration:
+                        generated_hits.append({
+                            'time': round(time_sec, 4),
+                            'type': instrument,
+                            'bar': bar,
+                            'beat': beat_pos,
+                            'confidence': 0.85,
+                            'source': 'pattern_generated',
+                            'description': description,
+                            'notes': notes,
+                        })
+
+            logger.info(f'Generated {len([h for h in generated_hits if h["type"] == instrument])} {instrument} hits')
+
+        # Sort by time
+        generated_hits.sort(key=lambda x: x['time'])
+
+        elapsed = time.time() - start_time
+        logger.info(f'Pattern detection complete: {len(generated_hits)} total hits in {elapsed:.2f}s')
+
+        return {
+            'bpm': corrected_bpm,
+            'duration': duration,
+            'total_bars': total_bars,
+            'seconds_per_bar': round(seconds_per_bar, 4),
+            'seconds_per_beat': round(seconds_per_beat, 4),
+            'patterns': patterns,
+            'generated_hits': generated_hits,
+            'total_generated': len(generated_hits),
+            'elapsed_seconds': round(elapsed, 2),
+        }
+
+    except Exception as e:
+        logger.error(f'Pattern detection error: {e}', exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+        gc.collect()
+
+
+@app.post('/detect-from-spectrogram')
+async def detect_from_spectrogram(
+    audio: UploadFile = File(...),
+    instrument: str = Form('perc'),  # 'perc', 'clap', 'kick', etc.
+    start_bar: int = Form(0),
+    end_bar: int = Form(999),
+    description: str = Form(''),  # e.g., "wood block", "double clap with reverb"
+):
+    """
+    Use Gemini vision to detect specific instruments from spectrogram.
+    Returns EXACT timestamps where the instrument is visible.
+    """
+    start_time = time.time()
+    file_id = str(uuid.uuid4())[:8]
+    temp_path = TEMP_DIR / f'{file_id}_{audio.filename}'
+
+    try:
+        # Save and load audio
+        content = await audio.read()
+        with open(temp_path, 'wb') as f:
+            f.write(content)
+
+        y, sr = load_audio(str(temp_path))
+        duration = len(y) / sr
+
+        # Detect BPM first
+        beat_result, method = detect_beats(str(temp_path), y, sr)
+        corrected_bpm, corrected_beats, corrected_downbeats = correct_half_time_beats(
+            beat_result.bpm, beat_result.beats, beat_result.downbeats
+        )
+
+        # Calculate bar timing
+        seconds_per_beat = 60 / corrected_bpm
+        seconds_per_bar = seconds_per_beat * beat_result.time_signature
+
+        # Calculate time range
+        start_time_sec = start_bar * seconds_per_bar
+        end_time_sec = min(end_bar * seconds_per_bar, duration)
+
+        logger.info(f'Spectrogram detection: {instrument}, bars {start_bar}-{end_bar}, time {start_time_sec:.1f}-{end_time_sec:.1f}s')
+
+        # Generate spectrogram for the specific range
+        spec_b64, spec_bytes = generate_detection_spectrogram(y, sr)
+
+        # Build prompt for precise detection
+        instrument_desc = description if description else instrument
+        prompt = f"""Analyze this spectrogram to find ALL occurrences of: {instrument_desc}
+
+Track info:
+- BPM: {int(corrected_bpm)}
+- Duration: {duration:.1f} seconds
+- Time signature: {beat_result.time_signature}/4
+- Seconds per bar: {seconds_per_bar:.3f}
+- Focus on bars {start_bar} to {end_bar} (time {start_time_sec:.1f}s to {end_time_sec:.1f}s)
+
+TASK: Look at the spectrogram and identify EVERY visible instance of {instrument_desc}.
+
+For {instrument}:
+- Wood blocks/claves appear as short vertical lines in the 2-6kHz range
+- They are often QUIET (faint) but have sharp transients
+- Look for repeating patterns at regular intervals
+
+Return a JSON object with:
+{{
+  "instrument": "{instrument}",
+  "description": "{instrument_desc}",
+  "total_hits": number,
+  "pattern": "description of the pattern you see",
+  "hits": [
+    {{"time": seconds, "bar": bar_number, "beat": beat_in_bar, "confidence": 0.0-1.0}},
+    ...
+  ]
+}}
+
+Be PRECISE with timestamps. Calculate based on BPM ({corrected_bpm}) and bar position.
+Formula: time = bar * {seconds_per_bar:.4f} + beat * {seconds_per_beat:.4f}
+
+Return ONLY the JSON, no explanation."""
+
+        # Call Gemini
+        if not GEMINI_AVAILABLE:
+            raise HTTPException(status_code=500, detail='Gemini not available')
+
+        api_key = os.getenv('GOOGLE_API_KEY')
+        if not api_key:
+            raise HTTPException(status_code=500, detail='GOOGLE_API_KEY not configured')
+
+        genai.configure(api_key=api_key)
+
+        from PIL import Image
+        spectrogram_image = Image.open(io.BytesIO(spec_bytes))
+
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        response = model.generate_content(
+            [prompt, spectrogram_image],
+            generation_config=genai.GenerationConfig(
+                temperature=0.2,
+                max_output_tokens=4000,
+            )
+        )
+
+        # Parse response
+        ai_response = response.text.strip()
+        logger.info(f'Gemini response: {ai_response[:500]}...')
+
+        # Extract JSON
+        hits = []
+        try:
+            if '```json' in ai_response:
+                ai_response = ai_response.split('```json')[1].split('```')[0]
+            elif '```' in ai_response:
+                ai_response = ai_response.split('```')[1].split('```')[0]
+
+            start_idx = ai_response.find('{')
+            end_idx = ai_response.rfind('}') + 1
+            if start_idx >= 0 and end_idx > start_idx:
+                data = json.loads(ai_response[start_idx:end_idx])
+                hits = data.get('hits', [])
+                pattern = data.get('pattern', 'unknown')
+                total_hits = data.get('total_hits', len(hits))
+        except Exception as e:
+            logger.warning(f'Failed to parse Gemini response: {e}')
+            pattern = 'parse error'
+            total_hits = 0
+
+        elapsed = time.time() - start_time
+        logger.info(f'Spectrogram detection found {len(hits)} {instrument} hits in {elapsed:.2f}s')
+
+        return {
+            'instrument': instrument,
+            'description': instrument_desc,
+            'bpm': corrected_bpm,
+            'duration': duration,
+            'bars_scanned': f'{start_bar}-{end_bar}',
+            'pattern': pattern,
+            'total_hits': len(hits),
+            'hits': hits,
+            'elapsed_seconds': round(elapsed, 2),
+        }
+
+    except Exception as e:
+        logger.error(f'Spectrogram detection error: {e}', exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+        gc.collect()
+
+
+@app.post('/analyze-with-ai')
+async def analyze_with_ai_guidance(
+    audio: UploadFile = File(...),
+    use_cache: bool = Form(True),
+    model_tier: str = Form('free'),  # 'free', 'standard', or 'premium'
+    force_reanalyze: bool = Form(False),
+):
+    """
+    AI-guided rhythm detection using Gemini spectrogram analysis.
+
+    Flow:
+    1. Check cache for existing AI analysis
+    2. If not cached or force_reanalyze, generate spectrogram
+    3. Send to Gemini for pattern analysis
+    4. Configure detection based on AI analysis
+    5. Run detection with AI-guided parameters
+    6. Cache results
+
+    Model tiers:
+    - free: Gemini 2.0 Flash (good for testing)
+    - standard: Gemini 2.5 Pro (balanced)
+    - premium: Gemini 3 Pro (best accuracy)
+    """
+    start_time = time.time()
+    file_id = str(uuid.uuid4())[:8]
+    temp_path = TEMP_DIR / f'{file_id}_{audio.filename}'
+
+    try:
+        # Save uploaded file
+        content = await audio.read()
+        with open(temp_path, 'wb') as f:
+            f.write(content)
+
+        # Load audio
+        y, sr = load_audio(str(temp_path))
+        duration = len(y) / sr
+
+        # Generate cache key
+        cache_key = get_cache_key(content, sr)
+        logger.info(f'AI-guided analysis: {duration:.1f}s, cache_key={cache_key}')
+
+        # Check cache
+        ai_analysis = None
+        cached = None
+        if use_cache and not force_reanalyze:
+            cached = get_cached_analysis(cache_key)
+            if cached and 'ai_analysis' in cached:
+                ai_analysis = AIPatternAnalysis(**cached['ai_analysis'])
+                logger.info(f'Using cached AI analysis: {ai_analysis.notes}')
+
+        # Step 1: Detect BPM first (needed for AI prompt context)
+        beat_result, method = detect_beats(str(temp_path), y, sr)
+        corrected_bpm, corrected_beats, corrected_downbeats = correct_half_time_beats(
+            beat_result.bpm, beat_result.beats, beat_result.downbeats
+        )
+
+        # Step 2: AI Analysis (if not cached)
+        if ai_analysis is None:
+            logger.info('Generating spectrogram for AI analysis...')
+            spec_b64, spec_bytes = generate_detection_spectrogram(y, sr)
+
+            # Get model from config
+            config = load_cache_config()
+            model_map = {
+                'free': config.get('models', {}).get('free', {}).get('id', 'gemini-2.0-flash'),
+                'standard': config.get('models', {}).get('standard', {}).get('id', 'gemini-2.5-pro'),
+                'premium': config.get('models', {}).get('premium', {}).get('id', 'gemini-2.5-pro'),
+            }
+            model_id = model_map.get(model_tier, 'gemini-2.0-flash')
+
+            # Remove :free suffix for Google API
+            if ':free' in model_id:
+                model_id = model_id.replace(':free', '').replace('-exp', '')
+            if 'google/' in model_id:
+                model_id = model_id.replace('google/', '')
+
+            logger.info(f'Calling Gemini ({model_id}) for pattern analysis...')
+            try:
+                ai_response = call_gemini_for_detection(spec_bytes, model_id, corrected_bpm)
+                ai_analysis = parse_ai_pattern_response(ai_response)
+                logger.info(f'AI detected: {ai_analysis.hihat_pattern}, {ai_analysis.kick_pattern}')
+            except Exception as e:
+                logger.warning(f'Gemini analysis failed: {e}, using defaults')
+                ai_analysis = AIPatternAnalysis(notes=f'Gemini error: {e}')
+
+        # Step 3: Configure detection from AI
+        detection_config = configure_detection_from_ai(ai_analysis)
+
+        # Step 4: Run detection with AI-guided config
+        beats_array = np.array(corrected_beats)
+        beat_aligned_hits = detect_drums_beat_aligned(
+            y, sr, beats_array, beat_result.time_signature
+        )
+
+        # Convert to DrumHit objects
+        hits = []
+        for drum_type, times in beat_aligned_hits.items():
+            for t in times:
+                hits.append(DrumHit(
+                    time=float(t),
+                    type=drum_type,
+                    confidence=0.85,
+                    features=None
+                ))
+
+        hits.sort(key=lambda h: h.time)
+
+        # Detect swing and genre
+        swing = detect_swing(hits, beat_result.beats, beat_result.time_signature)
+        detected_genre, genre_confidence = detect_genre(beat_result.bpm, hits, swing)
+
+        # Count hits by type
+        hit_counts = {}
+        for h in hits:
+            hit_counts[h.type] = hit_counts.get(h.type, 0) + 1
+
+        # Step 5: Cache results
+        if use_cache and not cached:
+            save_cached_analysis(cache_key, {
+                'ai_analysis': ai_analysis.model_dump(),
+                'detection_config': detection_config,
+                'hit_counts': hit_counts,
+                'bpm': corrected_bpm,
+                'detected_genre': detected_genre,
+            }, audio.filename)
+
+        elapsed = time.time() - start_time
+        logger.info(f'AI-guided analysis complete in {elapsed:.2f}s')
+        logger.info(f'Detected: {hit_counts}')
+
+        return {
+            'bpm': corrected_bpm,
+            'bpm_confidence': beat_result.bpm_confidence,
+            'beats': corrected_beats,
+            'downbeats': corrected_downbeats,
+            'time_signature': beat_result.time_signature,
+            'hits': [h.model_dump() for h in hits],
+            'swing': swing,
+            'analysis_method': 'ai-guided',
+            'duration': duration,
+            'detected_genre': detected_genre,
+            'genre_confidence': genre_confidence,
+            'ai_analysis': ai_analysis.model_dump(),
+            'detection_config': detection_config,
+            'cache_key': cache_key,
+            'cached': cached is not None,
+            'model_tier': model_tier,
+            'elapsed_seconds': round(elapsed, 2),
+        }
+
+    except Exception as e:
+        logger.error(f'Error in AI-guided analysis: {e}', exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+        gc.collect()
+
+
+@app.get('/ai-cache-status')
+async def get_ai_cache_status():
+    """Get cache status and statistics."""
+    cache_files = list(CACHE_DIR.glob('*_analysis.json'))
+
+    cache_entries = []
+    total_size = 0
+    for f in cache_files:
+        try:
+            stat = f.stat()
+            total_size += stat.st_size
+            with open(f, 'r') as fp:
+                data = json.load(fp)
+            cache_entries.append({
+                'cache_key': data.get('cache_key', f.stem),
+                'source_file': data.get('source_file', 'unknown'),
+                'cached_at': data.get('cached_at', 'unknown'),
+                'bpm': data.get('bpm'),
+                'detected_genre': data.get('detected_genre'),
+            })
+        except:
+            pass
+
+    config = load_cache_config()
+
+    return {
+        'cache_enabled': config.get('use_cache', True),
+        'cache_ttl_days': config.get('cache_ttl_days', 30),
+        'total_entries': len(cache_entries),
+        'total_size_kb': round(total_size / 1024, 2),
+        'entries': cache_entries,
+        'models': config.get('models', {}),
+    }
+
+
+@app.delete('/ai-cache/{cache_key}')
+async def delete_ai_cache_entry(cache_key: str):
+    """Delete a specific cache entry."""
+    cache_file = CACHE_DIR / f'{cache_key}_analysis.json'
+    if cache_file.exists():
+        cache_file.unlink()
+        return {'status': 'deleted', 'cache_key': cache_key}
+    return {'status': 'not_found', 'cache_key': cache_key}
+
+
+@app.delete('/ai-cache')
+async def clear_ai_cache():
+    """Clear all cache entries."""
+    cache_files = list(CACHE_DIR.glob('*_analysis.json'))
+    deleted = 0
+    for f in cache_files:
+        try:
+            f.unlink()
+            deleted += 1
+        except:
+            pass
+    return {'status': 'cleared', 'deleted_count': deleted}
 
 
 # =============================================================================

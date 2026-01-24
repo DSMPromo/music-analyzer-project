@@ -105,6 +105,8 @@ export default function RhythmGridPro({
   onVerifyHits, // Open step-by-step verification panel
   onFindQuietHits, // Find quiet percussion hits
   isFindingQuietHits = false, // Loading state for quiet hit detection
+  onDetectPatterns, // AI pattern detection (perc, clap)
+  isDetectingPattern = false, // Loading state for pattern detection
 
   // Analysis info
   analysisSource, // 'drums_stem', 'full_mix', or 'gemini_ai'
@@ -116,6 +118,9 @@ export default function RhythmGridPro({
   patternFilterApplied = false,
   hitsBeforeFilter = 0,
   hitsAfterFilter = 0,
+  // AI-guided analysis (Gemini 3 Pro)
+  isAiAnalyzing = false,
+  aiAnalysis = null,
 }) {
   // State
   const [currentPage, setCurrentPage] = useState(0);
@@ -270,17 +275,29 @@ export default function RhythmGridPro({
         {/* Analyze with AI Button */}
         {onAnalyzeWithAI && (
           <button
-            className={`rgp-ai-btn ${analysisSource === 'gemini_ai' ? 'active' : ''}`}
+            className={`rgp-ai-btn ${aiAnalysis ? 'active' : ''}`}
             onClick={onAnalyzeWithAI}
-            disabled={isAnalyzing}
-            title="Analyze with Gemini AI (more accurate)"
+            disabled={isAnalyzing || isAiAnalyzing}
+            title="Analyze with Gemini 3 Pro AI (spectrogram analysis)"
           >
-            {isAnalyzing ? (
-              <>🔄 {analysisProgress}%</>
+            {isAiAnalyzing ? (
+              <>🔄 AI Analyzing...</>
+            ) : aiAnalysis ? (
+              <>✨ AI: 16th notes</>
             ) : (
-              <>🤖 AI Detect</>
+              <>🤖 Gemini AI</>
             )}
           </button>
+        )}
+
+        {/* AI Analysis Badge */}
+        {aiAnalysis && aiAnalysis.confidence > 0 && (
+          <div
+            className="rgp-ai-badge"
+            title={`AI detected: ${aiAnalysis.kick_pattern}, ${aiAnalysis.hihat_pattern} (${Math.round(aiAnalysis.confidence * 100)}% confidence)`}
+          >
+            🎯 {Math.round(aiAnalysis.confidence * 100)}%
+          </div>
         )}
 
         {/* Step-by-Step Verification Button */}
@@ -304,6 +321,18 @@ export default function RhythmGridPro({
             title="Find quiet percussion (starts from bar 21)"
           >
             {isFindingQuietHits ? '🔄 Finding...' : '🔉 Quiet Hits'}
+          </button>
+        )}
+
+        {/* AI Pattern Detection Button */}
+        {onDetectPatterns && (
+          <button
+            className="rgp-ai-btn"
+            onClick={onDetectPatterns}
+            disabled={isAnalyzing || isDetectingPattern}
+            title="AI identifies patterns from spectrogram, then generates timestamps (perc, clap)"
+          >
+            {isDetectingPattern ? '🔄 Detecting...' : '🎯 Detect Patterns'}
           </button>
         )}
 

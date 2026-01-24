@@ -26,6 +26,7 @@ function RhythmVerificationPanel({
     snare: 0.5,
     hihat: 0.5,
     clap: 0.5,
+    perc: 0.5,
   });
 
   // Per-instrument verification state
@@ -34,6 +35,7 @@ function RhythmVerificationPanel({
     snare: [],
     hihat: [],
     clap: [],
+    perc: [],
   });
 
   // Track which drums are verified
@@ -42,6 +44,7 @@ function RhythmVerificationPanel({
     snare: false,
     hihat: false,
     clap: false,
+    perc: false,
   });
 
   const DRUM_COLORS = {
@@ -49,6 +52,7 @@ function RhythmVerificationPanel({
     snare: '#3b82f6',
     hihat: '#22c55e',
     clap: '#f97316',
+    perc: '#a855f7',
   };
 
   const DRUM_LABELS = {
@@ -56,6 +60,7 @@ function RhythmVerificationPanel({
     snare: 'Snare',
     hihat: 'Hi-Hat',
     clap: 'Clap',
+    perc: 'Perc',
   };
 
   // Run analysis with current sensitivities
@@ -70,7 +75,7 @@ function RhythmVerificationPanel({
       setAnalysisResult(result);
 
       // Initialize verified hits from analysis
-      const newVerifiedHits = { kick: [], snare: [], hihat: [], clap: [] };
+      const newVerifiedHits = { kick: [], snare: [], hihat: [], clap: [], perc: [] };
       for (const step of result.steps) {
         if (step.drum_type && step.hits) {
           newVerifiedHits[step.drum_type] = step.hits.map(h => ({
@@ -184,7 +189,7 @@ function RhythmVerificationPanel({
     return analysisResult.steps.find(s => s.drum_type === drumType);
   };
 
-  const steps = ['beat', 'kick', 'snare', 'hihat', 'clap'];
+  const steps = ['beat', 'kick', 'snare', 'hihat', 'clap', 'perc'];
   const currentDrum = steps[currentStep];
 
   return (

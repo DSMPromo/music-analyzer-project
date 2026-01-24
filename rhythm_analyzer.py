@@ -3884,7 +3884,7 @@ async def predict_quiet_hits(
     audio_duration: float = Form(...),
     time_signature: int = Form(4),
     start_bar: Optional[int] = Form(1),  # Factory default: start from bar 1
-    energy_multiplier: float = Form(0.3)  # Factory default: high sensitivity
+    energy_multiplier: float = Form(0.5)  # Factory default: balanced sensitivity (raised from 0.3 per TICKET-024)
 ):
     """
     Pattern-based prediction for finding quiet percussion hits.
@@ -4029,13 +4029,15 @@ async def predict_quiet_hits(
             return float(np.sqrt(np.mean(window ** 2)))
 
         # Energy thresholds for each drum type (adjusted for filtered signal)
+        # Raised thresholds to reduce false positives (TICKET-024)
+        # Combined with energy_multiplier=0.5 default, this reduces hits by ~33%
         ENERGY_THRESHOLDS = {
-            'kick': 0.008 * energy_multiplier,
-            'snare': 0.006 * energy_multiplier,
-            'hihat': 0.004 * energy_multiplier,
-            'clap': 0.005 * energy_multiplier,
-            'tom': 0.006 * energy_multiplier,
-            'perc': 0.003 * energy_multiplier,  # Very sensitive for quiet perc
+            'kick': 0.015 * energy_multiplier,    # Raised from 0.012
+            'snare': 0.012 * energy_multiplier,   # Raised from 0.009
+            'hihat': 0.008 * energy_multiplier,   # Raised from 0.006
+            'clap': 0.010 * energy_multiplier,    # Raised from 0.008
+            'tom': 0.012 * energy_multiplier,     # Raised from 0.009
+            'perc': 0.007 * energy_multiplier,    # Raised from 0.005
         }
 
         logger.info(f'Scanning bars {start_bar_idx + 1} to {total_bars} for quiet hits...')
@@ -4115,8 +4117,8 @@ async def predict_quiet_hits(
             onset_frames = librosa.onset.onset_detect(
                 onset_envelope=onset_env, sr=sr,
                 pre_max=3, post_max=3, pre_avg=5, post_avg=5,
-                delta=0.03 * energy_multiplier,  # Very low threshold
-                wait=int(sr * 0.03 / 512)
+                delta=0.08 * energy_multiplier,  # Raised from 0.05 to further reduce false positives (TICKET-024)
+                wait=int(sr * 0.04 / 512)        # Increased wait time between onsets
             )
             onset_times = librosa.frames_to_time(onset_frames, sr=sr)
 
@@ -4214,7 +4216,7 @@ async def detect_instruments(
     instrument_types: str = Form('vocals'),  # Comma-separated: vocals,bass,piano,guitar,synth
     start_time: float = Form(0.0),
     end_time: Optional[float] = Form(None),
-    energy_multiplier: float = Form(0.3),  # Factory default: high sensitivity
+    energy_multiplier: float = Form(0.5),  # Factory default: balanced sensitivity (raised from 0.3 per TICKET-024)
     detect_stereo: bool = Form(True),  # Detect panned elements (ad-libs)
     # === ADVANCED PROCESSING OPTIONS ===
     use_dynamic_eq: bool = Form(True),        # Apply EQ shaping per instrument

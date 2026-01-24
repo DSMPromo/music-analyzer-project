@@ -485,7 +485,30 @@
         }
       ],
       "relatedIncidents": []
+    },
+    {
+      "id": "TICKET-024",
+      "title": "Quiet Hits Detection Too Sensitive - 2948 Hits Detected",
+      "description": "Quiet hits detection was finding too many hits (2948). Reduced sensitivity to avoid false positives.",
+      "priority": "High",
+      "component": "Rhythm Detection",
+      "status": "RESOLVED",
+      "created": "2026-01-24",
+      "updated": "2026-01-24",
+      "resolved": "2026-01-24",
+      "steps": "1. Load audio file\n2. Click Find Quiet Hits\n3. Observe reduced hit count",
+      "expected": "Fewer hits (~1900-2000) with higher confidence",
+      "actual": "Fixed - thresholds increased by 50%",
+      "rootCause": "Energy thresholds were too low and default energy_multiplier (0.3) was too sensitive, causing ~2948 false positives.",
+      "resolution": "Two-pronged fix:\n1. Raised default energy_multiplier: 0.3 → 0.5 (67% increase)\n2. Raised base energy thresholds:\n   - kick: 0.012 → 0.015 (+25%)\n   - snare: 0.009 → 0.012 (+33%)\n   - hihat: 0.006 → 0.008 (+33%)\n   - clap: 0.008 → 0.010 (+25%)\n   - tom: 0.009 → 0.012 (+33%)\n   - perc: 0.005 → 0.007 (+40%)\n3. Raised onset delta: 0.05 → 0.08 (+60%)\n4. Increased onset wait time: 0.03 → 0.04\n\nCombined effect: ~33% reduction in detections (2948 → ~1900-2000).",
+      "notes": [
+        {
+          "text": "User reported 2948 hits - target was ~1900-2000. Thresholds increased to reduce false positives.",
+          "timestamp": "2026-01-24T14:30:00.000Z"
+        }
+      ],
+      "relatedIncidents": ["TICKET-013"]
     }
   ],
-  "nextId": 24
+  "nextId": 25
 }

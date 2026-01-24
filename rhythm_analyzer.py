@@ -808,9 +808,9 @@ def detect_drums_beat_aligned(y: np.ndarray, sr: int, beats: np.ndarray, time_si
                 results['clap'].append(beat_time)
 
     # KICK/808: Check on-beat positions with adaptive thresholds
-    # Use percentile-based detection instead of fixed multipliers
+    # Use percentile-based detection - 70th percentile to avoid over-detection
     all_low_energies = [get_energy_at_time(y_low, sr, t) for t in sixteenth_notes]
-    kick_threshold_adaptive = np.percentile(all_low_energies, 60) if all_low_energies else low_threshold
+    kick_threshold_adaptive = np.percentile(all_low_energies, 70) if all_low_energies else low_threshold
 
     for idx, sixteenth_time in enumerate(sixteenth_notes):
         low_energy = get_energy_at_time(y_low, sr, sixteenth_time)
@@ -825,13 +825,13 @@ def detect_drums_beat_aligned(y: np.ndarray, sr: int, beats: np.ndarray, time_si
         if position_in_bar in [0, 8]:
             if low_energy > kick_threshold_adaptive:
                 results['kick'].append(sixteenth_time)
-        # Beats 2 and 4 (positions 4, 12) - secondary
+        # Beats 2 and 4 (positions 4, 12) - secondary (stricter)
         elif position_in_bar in [4, 12]:
-            if low_energy > kick_threshold_adaptive * 1.2:
+            if low_energy > kick_threshold_adaptive * 1.5:
                 results['kick'].append(sixteenth_time)
-        # Syncopated 8th notes (positions 2, 6, 10, 14)
+        # Syncopated 8th notes (positions 2, 6, 10, 14) - strictest
         elif position_in_bar in [2, 6, 10, 14]:
-            if low_energy > kick_threshold_adaptive * 1.1:
+            if low_energy > kick_threshold_adaptive * 1.3:
                 results['kick'].append(sixteenth_time)
 
     # HI-HAT: Check 8th note positions with adaptive threshold

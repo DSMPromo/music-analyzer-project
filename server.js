@@ -114,6 +114,37 @@ app.get('/api/tickets', (req, res) => {
   res.json({ tickets: filtered, total: data.tickets.length });
 });
 
+// Get ticket stats (MUST be before :id route)
+app.get('/api/tickets/stats/summary', (req, res) => {
+  const data = loadTickets();
+  const stats = {
+    total: data.tickets.length,
+    open: data.tickets.filter(t => t.status === 'OPEN').length,
+    inProgress: data.tickets.filter(t => t.status === 'IN_PROGRESS').length,
+    resolved: data.tickets.filter(t => t.status === 'RESOLVED').length,
+    byPriority: {
+      Critical: data.tickets.filter(t => t.priority === 'Critical' && t.status !== 'RESOLVED').length,
+      High: data.tickets.filter(t => t.priority === 'High' && t.status !== 'RESOLVED').length,
+      Medium: data.tickets.filter(t => t.priority === 'Medium' && t.status !== 'RESOLVED').length,
+      Low: data.tickets.filter(t => t.priority === 'Low' && t.status !== 'RESOLVED').length
+    },
+    byComponent: {}
+  };
+
+  // Group by component
+  data.tickets.forEach(t => {
+    if (!stats.byComponent[t.component]) {
+      stats.byComponent[t.component] = { total: 0, open: 0 };
+    }
+    stats.byComponent[t.component].total++;
+    if (t.status !== 'RESOLVED') {
+      stats.byComponent[t.component].open++;
+    }
+  });
+
+  res.json(stats);
+});
+
 // Get single ticket
 app.get('/api/tickets/:id', (req, res) => {
   const data = loadTickets();
@@ -223,37 +254,6 @@ app.delete('/api/tickets/:id', (req, res) => {
   data.tickets.splice(index, 1);
   saveTickets(data);
   res.json({ success: true });
-});
-
-// Get ticket stats
-app.get('/api/tickets/stats/summary', (req, res) => {
-  const data = loadTickets();
-  const stats = {
-    total: data.tickets.length,
-    open: data.tickets.filter(t => t.status === 'OPEN').length,
-    inProgress: data.tickets.filter(t => t.status === 'IN_PROGRESS').length,
-    resolved: data.tickets.filter(t => t.status === 'RESOLVED').length,
-    byPriority: {
-      Critical: data.tickets.filter(t => t.priority === 'Critical' && t.status !== 'RESOLVED').length,
-      High: data.tickets.filter(t => t.priority === 'High' && t.status !== 'RESOLVED').length,
-      Medium: data.tickets.filter(t => t.priority === 'Medium' && t.status !== 'RESOLVED').length,
-      Low: data.tickets.filter(t => t.priority === 'Low' && t.status !== 'RESOLVED').length
-    },
-    byComponent: {}
-  };
-
-  // Group by component
-  data.tickets.forEach(t => {
-    if (!stats.byComponent[t.component]) {
-      stats.byComponent[t.component] = { total: 0, open: 0 };
-    }
-    stats.byComponent[t.component].total++;
-    if (t.status !== 'RESOLVED') {
-      stats.byComponent[t.component].open++;
-    }
-  });
-
-  res.json(stats);
 });
 
 // Upload audio file

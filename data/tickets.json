@@ -508,7 +508,53 @@
         }
       ],
       "relatedIncidents": ["TICKET-013"]
+    },
+    {
+      "id": "TICKET-025",
+      "title": "Frequency Band Analysis for AI Tuning",
+      "description": "Added /analyze-frequency-bands endpoint to compare spectrogram energy across all 36 instrument bands. Helps tune AI detection for 100% accuracy.",
+      "priority": "Medium",
+      "component": "Instrument Detection",
+      "status": "RESOLVED",
+      "created": "2026-01-24",
+      "updated": "2026-01-24",
+      "resolved": "2026-01-24",
+      "steps": "1. POST /analyze-frequency-bands with audio file\n2. Review signal-to-threshold ratios\n3. Apply suggested threshold adjustments",
+      "expected": "Identify optimal thresholds per frequency band",
+      "actual": "Endpoint returns full band analysis with recommendations",
+      "rootCause": null,
+      "resolution": "Added /analyze-frequency-bands endpoint with:\n- RMS energy per band (36 bands)\n- Signal-to-threshold ratio calculation\n- Masking detection (bass vs kick, vocals vs snare)\n- Automatic threshold recommendations\n- Category grouping (drums, bass, melodic, vocals, fx)\n- Test script: scripts/analyze-frequencies.sh",
+      "notes": [
+        {
+          "text": "Signal-to-threshold (STR) interpretation:\n- STR < 2.0: OK - unlikely to trigger false positives\n- STR 2.0-5.0: Warning - may trigger some detections\n- STR > 5.0: High - likely many false positives, raise threshold",
+          "timestamp": "2026-01-24T15:00:00.000Z"
+        }
+      ],
+      "relatedIncidents": ["TICKET-024"]
+    },
+    {
+      "id": "TICKET-026",
+      "title": "Spectrogram-Guided Detection for Quiet Sections",
+      "description": "Use spectrogram visual analysis to detect quiet rhythmic elements missed by standard detection. User has 1129 hits but quiet sections around bar 20 are not being detected. Need per-bar adaptive thresholds based on spectrogram energy.",
+      "priority": "High",
+      "component": "Rhythm Detection",
+      "status": "RESOLVED",
+      "created": "2026-01-24",
+      "updated": "2026-01-24",
+      "resolved": "2026-01-24",
+      "steps": "1. Analyze spectrogram per bar\n2. Identify low-energy bars\n3. Apply lower thresholds for quiet sections\n4. Re-detect with adaptive sensitivity",
+      "expected": "Detect all rhythmic elements including quiet sections",
+      "actual": "1129 hits detected, quiet sections around bar 20 missed",
+      "rootCause": "Fixed global thresholds miss quiet sections where overall energy is lower",
+      "resolution": "Added POST /detect-adaptive endpoint with:\n- Per-bar energy analysis using HPSS preprocessing\n- Auto-detection of quiet bars (below 60% of median energy)\n- Adaptive thresholds: sensitivity_boost parameter (default 2.0x)\n- Options: target_bars='quiet' for auto-detect, or specific bars like '20,21,22'\n- Returns bar_energies array showing which bars are quiet\n- Lower thresholds applied to quiet sections automatically",
+      "notes": [
+        {
+          "text": "User has full spectrogram view (L/R, 2ch, 44100Hz, FFT 2048). Need to use this visual info to guide detection.",
+          "timestamp": "2026-01-24T15:30:00.000Z"
+        }
+      ],
+      "relatedIncidents": ["TICKET-024", "TICKET-025"]
     }
   ],
-  "nextId": 25
+  "nextId": 27
 }

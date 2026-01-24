@@ -5327,6 +5327,467 @@ def generate_reverb_recommendations(analysis: dict) -> dict:
 
 
 # =============================================================================
+# Spectrogram Frequency Analysis (for AI tuning)
+# =============================================================================
+
+@app.post('/analyze-frequency-bands')
+async def analyze_frequency_bands(
+    file: UploadFile = File(...),
+    start_time: float = Form(0.0),
+    end_time: Optional[float] = Form(None),
+    use_hpss: bool = Form(True),  # Separate harmonic/percussive
+):
+    """
+    Analyze frequency band energy distribution for AI tuning.
+
+    Returns energy levels across all instrument frequency bands,
+    helping identify which frequencies to target for detection.
+
+    Useful for:
+    - Comparing spectrogram energy across bands
+    - Finding optimal thresholds per instrument type
+    - Identifying frequency masking issues
+    - Tuning AI detection sensitivity
+    """
+    logger.info('=== Frequency Band Analysis ===')
+
+    temp_path = f'/tmp/freq_analyze_{file.filename}'
+    try:
+        # Save file
+        with open(temp_path, 'wb') as f:
+            content = await file.read()
+            f.write(content)
+
+        # Load audio
+        y, sr = librosa.load(temp_path, sr=44100, mono=True)
+        duration = len(y) / sr
+
+        if end_time is None or end_time > duration:
+            end_time = duration
+
+        # Trim to range
+        start_sample = int(start_time * sr)
+        end_sample = int(end_time * sr)
+        y = y[start_sample:end_sample]
+
+        logger.info(f'Analyzing {end_time - start_time:.2f}s of audio')
+
+        # Apply HPSS if requested
+        if use_hpss:
+            D = librosa.stft(y)
+            H, P = librosa.decompose.hpss(D, margin=2.0)
+            y_harmonic = librosa.istft(H, length=len(y))
+            y_percussive = librosa.istft(P, length=len(y))
+        else:
+            y_harmonic = y
+            y_percussive = y
+
+        # Bandpass filter function
+        from scipy.signal import butter, sosfilt
+
+        def bandpass_filter(data, lowcut, highcut, fs, order=4):
+            nyq = 0.5 * fs
+            low = max(lowcut / nyq, 0.01)
+            high = min(highcut / nyq, 0.99)
+            if low >= high:
+                return data
+            try:
+                sos = butter(order, [low, high], btype='band', output='sos')
+                return sosfilt(sos, data)
+            except:
+                return data
+
+        def get_rms(audio):
+            return float(np.sqrt(np.mean(audio ** 2)))
+
+        def get_peak(audio):
+            return float(np.max(np.abs(audio)))
+
+        # Categorize instruments
+        CATEGORIES = {
+            'drums': ['kick', 'snare', 'hihat', 'clap', 'tom', 'perc'],
+            'bass': ['sub_bass', 'bass', 'bass_harmonics'],
+            'melodic': ['piano_low', 'piano_mid', 'piano_high', 'guitar', 'guitar_bright',
+                       'synth_lead', 'synth_pad', 'strings', 'brass', 'pluck'],
+            'vocals': ['vocal_low', 'vocal_body', 'vocal_presence', 'vocal_air',
+                      'sibilance', 'adlib', 'harmony'],
+            'fx': ['uplifter', 'downlifter', 'impact', 'sub_drop', 'reverse_crash',
+                  'white_noise', 'swoosh', 'tape_stop', 'stutter', 'vocal_chop'],
+        }
+
+        # Determine which source to use for each category
+        USE_PERCUSSIVE = {'drums', 'fx'}
+
+        results = {
+            'success': True,
+            'duration': end_time - start_time,
+            'total_rms': get_rms(y),
+            'total_peak': get_peak(y),
+            'bands': {},
+            'categories': {},
+            'recommendations': [],
+        }
+
+        # Analyze each frequency band
+        all_bands = []
+        for category, instruments in CATEGORIES.items():
+            source = y_percussive if category in USE_PERCUSSIVE else y_harmonic
+            category_energy = 0
+
+            for inst in instruments:
+                if inst not in INSTRUMENT_FILTERS:
+                    continue
+
+                low, high = INSTRUMENT_FILTERS[inst]
+                filtered = bandpass_filter(source, low, high, sr)
+
+                rms = get_rms(filtered)
+                peak = get_peak(filtered)
+                threshold = INSTRUMENT_THRESHOLDS.get(inst, 0.005)
+
+                # Calculate signal-to-threshold ratio
+                str_ratio = rms / threshold if threshold > 0 else 0
+
+                band_info = {
+                    'frequency_range': f'{low}-{high}Hz',
+                    'rms': round(rms, 6),
+                    'peak': round(peak, 4),
+                    'threshold': threshold,
+                    'signal_to_threshold': round(str_ratio, 2),
+                    'category': category,
+                    'source': 'percussive' if category in USE_PERCUSSIVE else 'harmonic',
+                }
+
+                results['bands'][inst] = band_info
+                all_bands.append((inst, rms, str_ratio))
+                category_energy += rms
+
+            results['categories'][category] = {
+                'total_rms': round(category_energy, 6),
+                'instruments': instruments,
+            }
+
+        # Sort by energy
+        all_bands.sort(key=lambda x: x[1], reverse=True)
+
+        # Top 10 bands by energy
+        results['top_energy_bands'] = [
+            {'band': b[0], 'rms': round(b[1], 6), 'str_ratio': round(b[2], 2)}
+            for b in all_bands[:10]
+        ]
+
+        # Bands with high signal-to-threshold (likely to trigger detections)
+        high_str = [(b[0], b[2]) for b in all_bands if b[2] > 2.0]
+        high_str.sort(key=lambda x: x[1], reverse=True)
+        results['high_detection_bands'] = [
+            {'band': b[0], 'str_ratio': round(b[1], 2)}
+            for b in high_str[:10]
+        ]
+
+        # Generate recommendations
+        recs = []
+
+        # Check for frequency masking
+        kick_rms = results['bands'].get('kick', {}).get('rms', 0)
+        bass_rms = results['bands'].get('bass', {}).get('rms', 0)
+        if bass_rms > kick_rms * 1.5:
+            recs.append({
+                'type': 'masking',
+                'issue': 'Bass may be masking kick detection',
+                'suggestion': 'Increase kick threshold or use HPSS preprocessing',
+            })
+
+        snare_rms = results['bands'].get('snare', {}).get('rms', 0)
+        vocal_body_rms = results['bands'].get('vocal_body', {}).get('rms', 0)
+        if vocal_body_rms > snare_rms * 2:
+            recs.append({
+                'type': 'masking',
+                'issue': 'Vocals may be masking snare detection',
+                'suggestion': 'Use HPSS to isolate percussive content',
+            })
+
+        # Check for overly sensitive bands
+        for band, rms, str_ratio in all_bands:
+            if str_ratio > 5.0:
+                current_thresh = INSTRUMENT_THRESHOLDS.get(band, 0.005)
+                suggested = round(rms / 2.5, 6)  # Target STR of 2.5
+                recs.append({
+                    'type': 'threshold',
+                    'band': band,
+                    'issue': f'Very high signal ({str_ratio:.1f}x threshold)',
+                    'current_threshold': current_thresh,
+                    'suggested_threshold': suggested,
+                })
+
+        results['recommendations'] = recs[:10]  # Limit to 10 recommendations
+
+        logger.info(f'Analyzed {len(results["bands"])} frequency bands')
+        return results
+
+    except Exception as e:
+        logger.error(f'Error in frequency analysis: {e}', exc_info=True)
+        return {'success': False, 'error': str(e)}
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+# =============================================================================
+# Spectrogram-Guided Adaptive Detection (TICKET-026)
+# =============================================================================
+
+@app.post('/detect-adaptive')
+async def detect_adaptive(
+    file: UploadFile = File(...),
+    bpm: float = Form(...),
+    downbeat_offset: float = Form(0.0),
+    time_signature: int = Form(4),
+    existing_hits: str = Form('[]'),  # JSON array of existing hits
+    target_bars: Optional[str] = Form(None),  # Comma-separated bar numbers, or "quiet" for auto-detect
+    sensitivity_boost: float = Form(2.0),  # How much to lower thresholds for quiet sections
+):
+    """
+    Spectrogram-guided adaptive detection for quiet sections.
+
+    Analyzes energy per bar and applies lower thresholds to quiet sections
+    where standard detection missed hits.
+
+    Use cases:
+    - target_bars="20,21,22" - Detect in specific bars
+    - target_bars="quiet" - Auto-detect quiet bars and scan them
+    - target_bars=None - Scan all bars with adaptive thresholds
+    """
+    logger.info('=== Spectrogram-Guided Adaptive Detection ===')
+    logger.info(f'BPM: {bpm}, Target bars: {target_bars}, Sensitivity boost: {sensitivity_boost}x')
+
+    import json
+    from scipy.signal import butter, sosfilt
+
+    temp_file = None
+    temp_path = None
+
+    try:
+        # Create temp file
+        suffix = Path(file.filename).suffix if file.filename else '.wav'
+        temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False, dir=str(TEMP_DIR))
+        temp_path = temp_file.name
+        content = await file.read()
+        temp_file.write(content)
+        temp_file.close()
+
+        # Load audio
+        y, sr = librosa.load(temp_path, sr=44100, mono=True)
+        duration = len(y) / sr
+
+        # Parse existing hits
+        try:
+            existing = json.loads(existing_hits)
+        except:
+            existing = []
+
+        existing_times = set(round(h.get('time', 0), 3) for h in existing)
+
+        # Calculate timing
+        beat_duration = 60.0 / bpm
+        bar_duration = beat_duration * time_signature
+        total_bars = int(duration / bar_duration) + 1
+
+        logger.info(f'Audio: {duration:.2f}s, {total_bars} bars')
+
+        # Apply HPSS to isolate percussive content
+        y_perc = apply_hpss_preprocessing(y, sr)
+
+        # === STEP 1: Analyze energy per bar ===
+        bar_energies = []
+        for bar_idx in range(total_bars):
+            bar_start = downbeat_offset + (bar_idx * bar_duration)
+            bar_end = bar_start + bar_duration
+
+            start_sample = max(0, int(bar_start * sr))
+            end_sample = min(len(y_perc), int(bar_end * sr))
+
+            if end_sample > start_sample:
+                bar_audio = y_perc[start_sample:end_sample]
+                rms = float(np.sqrt(np.mean(bar_audio ** 2)))
+                bar_energies.append({'bar': bar_idx + 1, 'rms': rms})
+            else:
+                bar_energies.append({'bar': bar_idx + 1, 'rms': 0})
+
+        # Calculate median energy for reference
+        all_rms = [b['rms'] for b in bar_energies if b['rms'] > 0]
+        median_rms = np.median(all_rms) if all_rms else 0.01
+
+        # Mark quiet bars (below 60% of median)
+        for b in bar_energies:
+            b['is_quiet'] = b['rms'] < median_rms * 0.6
+            b['relative_energy'] = round(b['rms'] / median_rms, 3) if median_rms > 0 else 0
+
+        quiet_bars = [b['bar'] for b in bar_energies if b['is_quiet']]
+        logger.info(f'Quiet bars detected: {quiet_bars[:20]}...' if len(quiet_bars) > 20 else f'Quiet bars: {quiet_bars}')
+
+        # === STEP 2: Determine which bars to scan ===
+        if target_bars == 'quiet':
+            # Auto-detect quiet bars
+            bars_to_scan = quiet_bars
+        elif target_bars:
+            # Parse comma-separated bar numbers
+            try:
+                bars_to_scan = [int(b.strip()) for b in target_bars.split(',')]
+            except:
+                bars_to_scan = list(range(1, total_bars + 1))
+        else:
+            # Scan all bars
+            bars_to_scan = list(range(1, total_bars + 1))
+
+        logger.info(f'Scanning {len(bars_to_scan)} bars')
+
+        # === STEP 3: Create frequency-filtered versions ===
+        def bandpass_filter(data, lowcut, highcut, fs, order=4):
+            nyq = 0.5 * fs
+            low = max(lowcut / nyq, 0.01)
+            high = min(highcut / nyq, 0.99)
+            if low >= high:
+                return data
+            try:
+                sos = butter(order, [low, high], btype='band', output='sos')
+                filtered = sosfilt(sos, data)
+                return filtered if np.isfinite(filtered).all() else data
+            except:
+                return data
+
+        DRUM_FILTERS = {
+            'kick': (20, 250),
+            'snare': (150, 2000),
+            'hihat': (5000, 15000),
+            'clap': (1000, 4000),
+            'tom': (80, 500),
+            'perc': (2000, 8000),
+        }
+
+        filtered_audio = {}
+        for drum_type, (low, high) in DRUM_FILTERS.items():
+            filtered_audio[drum_type] = bandpass_filter(y_perc, low, min(high, sr/2 - 100), sr)
+
+        # === STEP 4: Adaptive detection per bar ===
+        grid_duration = beat_duration / 4  # 16th note
+        window_samples = int(sr * 0.05)  # 50ms window
+
+        def get_window_energy(audio, time_sec, sr, window_samples):
+            center_sample = int(time_sec * sr)
+            start = max(0, center_sample - window_samples // 2)
+            end = min(len(audio), center_sample + window_samples // 2)
+            if end <= start:
+                return 0.0
+            window = audio[start:end]
+            return float(np.sqrt(np.mean(window ** 2)))
+
+        # Base thresholds (will be lowered for quiet sections)
+        BASE_THRESHOLDS = {
+            'kick': 0.010,
+            'snare': 0.008,
+            'hihat': 0.005,
+            'clap': 0.006,
+            'tom': 0.008,
+            'perc': 0.004,
+        }
+
+        # Expected pattern positions (16th note grid, 0-15)
+        EXPECTED_POSITIONS = {
+            'kick': [0, 8],           # Beats 1, 3
+            'snare': [4, 12],         # Beats 2, 4
+            'hihat': [0, 2, 4, 6, 8, 10, 12, 14],  # 8th notes
+            'clap': [4, 12],          # Beats 2, 4
+            'tom': [],                # Variable
+            'perc': [0, 2, 4, 6, 8, 10, 12, 14],   # 8th notes
+        }
+
+        new_hits = []
+
+        for bar_num in bars_to_scan:
+            bar_idx = bar_num - 1
+            bar_start = downbeat_offset + (bar_idx * bar_duration)
+
+            # Get bar energy info
+            bar_info = next((b for b in bar_energies if b['bar'] == bar_num), None)
+            is_quiet = bar_info['is_quiet'] if bar_info else False
+
+            # Apply sensitivity boost for quiet bars
+            threshold_multiplier = 1.0 / sensitivity_boost if is_quiet else 1.0
+
+            for drum_type, positions in EXPECTED_POSITIONS.items():
+                if not positions:
+                    continue
+
+                filtered_y = filtered_audio[drum_type]
+                threshold = BASE_THRESHOLDS[drum_type] * threshold_multiplier
+
+                for grid_pos in positions:
+                    hit_time = bar_start + (grid_pos * grid_duration)
+
+                    if hit_time < 0 or hit_time >= duration:
+                        continue
+
+                    # Check if already have a hit here
+                    if any(abs(t - hit_time) < 0.03 for t in existing_times):
+                        continue
+
+                    energy = get_window_energy(filtered_y, hit_time, sr, window_samples)
+
+                    if energy > threshold:
+                        new_hits.append({
+                            'time': round(hit_time, 4),
+                            'type': drum_type,
+                            'confidence': round(min(energy / threshold, 1.0), 3),
+                            'bar': bar_num,
+                            'grid_position': grid_pos,
+                            'energy': round(energy, 5),
+                            'threshold_used': round(threshold, 5),
+                            'is_quiet_bar': is_quiet,
+                            'source': 'adaptive_detection',
+                        })
+                        existing_times.add(round(hit_time, 3))
+
+        # Sort by time
+        new_hits.sort(key=lambda x: x['time'])
+
+        # Count by type
+        hits_by_type = {}
+        for h in new_hits:
+            t = h['type']
+            hits_by_type[t] = hits_by_type.get(t, 0) + 1
+
+        logger.info(f'Found {len(new_hits)} new hits: {hits_by_type}')
+
+        return {
+            'success': True,
+            'total_bars': total_bars,
+            'bars_scanned': len(bars_to_scan),
+            'quiet_bars': quiet_bars,
+            'median_bar_energy': round(median_rms, 5),
+            'bar_energies': bar_energies,
+            'new_hits': new_hits,
+            'total_new_hits': len(new_hits),
+            'hits_by_type': hits_by_type,
+            'settings': {
+                'bpm': bpm,
+                'sensitivity_boost': sensitivity_boost,
+                'target_bars': target_bars,
+            }
+        }
+
+    except Exception as e:
+        logger.error(f'Error in adaptive detection: {e}', exc_info=True)
+        return {'success': False, 'error': str(e)}
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+        gc.collect()
+
+
+# =============================================================================
 # Main
 # =============================================================================
 

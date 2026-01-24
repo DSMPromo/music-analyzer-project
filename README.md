@@ -87,9 +87,128 @@ Each instrument type has custom processing presets for optimal detection.
 
 **Chord Detection** — Real-time recognition with interactive piano display. Circle of Fifths visualization. Nashville notation.
 
+**Advanced Chord Mode** — Toggle on for multi-instrument weighted detection. Fuses chroma from stems or extracts harmonic bands from full mix.
+
 **AI Mix Engineer** — Multi-provider AI analysis with Engineer and Producer personas. Ask questions, get professional insights.
 
 **Knowledge Lab** — Song structures, signal chains, frequency guides. Learn while you work.
+
+<br>
+
+### Advanced Chord Detection
+
+<br>
+
+**Two detection modes for different workflows:**
+
+| Mode | Method | Best For |
+|------|--------|----------|
+| **Basic** | Single-source chromagram | Quick analysis, live playback |
+| **Advanced** | Multi-instrument fusion | Stems, complex arrangements |
+
+<br>
+
+**How Advanced Mode Works**
+
+```
+Stems Available:
+  Bass → Extract chroma → Weight by loudness
+  Keys → Extract chroma → Weight by loudness
+  Vocals → Extract chroma → Weight by loudness
+  Other → Extract chroma → Weight by loudness
+         ↓
+  Weighted fusion → Template match → Smooth → Chord
+
+No Stems (Full Mix):
+  Audio → Harmonic bands → Extract chroma → Template match → Chord
+```
+
+<br>
+
+**20+ Harmonic Instruments**
+
+Each instrument has custom frequency ranges and priority weights:
+
+| Category | Instruments | Frequency Range |
+|----------|-------------|-----------------|
+| **Keys** | Piano, Keys, Organ, Rhodes | 80Hz — 5kHz |
+| **Synths** | Lead, Pad, Arp, Pluck | 100Hz — 8kHz |
+| **Strings** | Guitar, Violin, Cello | 80Hz — 5kHz |
+| **Bass** | Bass, Sub | 30Hz — 500Hz |
+| **Vocals** | Lead, Backing, Harmony | 100Hz — 4kHz |
+
+<br>
+
+**Instrument Weighting**
+
+Advanced mode calculates contribution from each source:
+
+```
+Piano:    ████████████░░ 85%  (high priority + loud)
+Bass:     ██████████░░░░ 70%  (bass priority + loud)
+Vocals:   ████░░░░░░░░░░ 28%  (lower priority)
+Other:    ██░░░░░░░░░░░░ 15%  (residual)
+```
+
+Weights consider:
+- Instrument priority (keys > bass > vocals)
+- Loudness (louder = more influence)
+- Spectral flatness (tonal > noisy)
+- Transient score (sustained > percussive)
+
+<br>
+
+**25 Chord Templates**
+
+| Type | Notes | Example |
+|------|-------|---------|
+| Major | 1, 3, 5 | C, E, G |
+| Minor | 1, b3, 5 | C, Eb, G |
+| Dominant 7 | 1, 3, 5, b7 | C, E, G, Bb |
+| Major 7 | 1, 3, 5, 7 | C, E, G, B |
+| Minor 7 | 1, b3, 5, b7 | C, Eb, G, Bb |
+| Diminished | 1, b3, b5 | C, Eb, Gb |
+| Augmented | 1, 3, #5 | C, E, G# |
+| Sus2 | 1, 2, 5 | C, D, G |
+| Sus4 | 1, 4, 5 | C, F, G |
+| Add9 | 1, 3, 5, 9 | C, E, G, D |
+| 6 | 1, 3, 5, 6 | C, E, G, A |
+| 9 | 1, 3, 5, b7, 9 | C, E, G, Bb, D |
+| Power | 1, 5 | C, G |
+
+Plus: m6, mM7, dim7, half-dim7, 7sus4, m9, M9, 11, 13
+
+<br>
+
+**Chord Smoothing**
+
+Hysteresis prevents flickering between similar chords:
+
+```javascript
+// Only switch chords when:
+// 1. New chord has 15%+ higher confidence
+// 2. Detected for 3+ consecutive frames
+// 3. Stable for 200ms+ duration
+```
+
+<br>
+
+**Toggle in UI**
+
+```
+┌─────────────────────────────────────┐
+│ Chord Detector                      │
+├─────────────────────────────────────┤
+│ Advanced Mode  ○───●                │
+│                                     │
+│ Current: Cmaj7   Confidence: 87%    │
+│                                     │
+│ Instrument Contributions:           │
+│ Piano   ████████████░░ 85%          │
+│ Bass    ██████████░░░░ 70%          │
+│ Vocals  ████░░░░░░░░░░ 28%          │
+└─────────────────────────────────────┘
+```
 
 <br>
 

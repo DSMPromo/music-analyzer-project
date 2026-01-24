@@ -2,6 +2,9 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 
 export function useAudioContext() {
   const [audioContext, setAudioContext] = useState(null);
+  const [analyser, setAnalyser] = useState(null);
+  const [leftAnalyser, setLeftAnalyser] = useState(null);
+  const [rightAnalyser, setRightAnalyser] = useState(null);
   const analyserRef = useRef(null);
   const leftAnalyserRef = useRef(null);
   const rightAnalyserRef = useRef(null);
@@ -14,37 +17,40 @@ export function useAudioContext() {
     contextRef.current = ctx;
 
     // Main analyser (mono/mixed)
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 4096;
-    analyser.smoothingTimeConstant = 0.8;
-    analyserRef.current = analyser;
+    const newAnalyser = ctx.createAnalyser();
+    newAnalyser.fftSize = 4096;
+    newAnalyser.smoothingTimeConstant = 0.8;
+    analyserRef.current = newAnalyser;
+    setAnalyser(newAnalyser);
 
     // Channel splitter for stereo analysis
     const splitter = ctx.createChannelSplitter(2);
     splitterRef.current = splitter;
 
     // Left channel analyser
-    const leftAnalyser = ctx.createAnalyser();
-    leftAnalyser.fftSize = 2048;
-    leftAnalyser.smoothingTimeConstant = 0.8;
-    leftAnalyserRef.current = leftAnalyser;
+    const newLeftAnalyser = ctx.createAnalyser();
+    newLeftAnalyser.fftSize = 2048;
+    newLeftAnalyser.smoothingTimeConstant = 0.8;
+    leftAnalyserRef.current = newLeftAnalyser;
+    setLeftAnalyser(newLeftAnalyser);
 
     // Right channel analyser
-    const rightAnalyser = ctx.createAnalyser();
-    rightAnalyser.fftSize = 2048;
-    rightAnalyser.smoothingTimeConstant = 0.8;
-    rightAnalyserRef.current = rightAnalyser;
+    const newRightAnalyser = ctx.createAnalyser();
+    newRightAnalyser.fftSize = 2048;
+    newRightAnalyser.smoothingTimeConstant = 0.8;
+    rightAnalyserRef.current = newRightAnalyser;
+    setRightAnalyser(newRightAnalyser);
 
     // Connect splitter to individual analysers
-    splitter.connect(leftAnalyser, 0);
-    splitter.connect(rightAnalyser, 1);
+    splitter.connect(newLeftAnalyser, 0);
+    splitter.connect(newRightAnalyser, 1);
 
     if (ctx.state === 'suspended') {
       await ctx.resume();
     }
 
     setAudioContext(ctx);
-    return ctx;
+    return { ctx, analyser: newAnalyser };
   }, []);
 
   const connectSource = useCallback((audioElement) => {
@@ -80,17 +86,45 @@ export function useAudioContext() {
 
   useEffect(() => {
     return () => {
+      // Disconnect all audio nodes before closing context to prevent leaks
+      try {
+        if (analyserRef.current) {
+          analyserRef.current.disconnect();
+        }
+      } catch (e) { /* Ignore disconnect errors */ }
+
+      try {
+        if (leftAnalyserRef.current) {
+          leftAnalyserRef.current.disconnect();
+        }
+      } catch (e) { /* Ignore disconnect errors */ }
+
+      try {
+        if (rightAnalyserRef.current) {
+          rightAnalyserRef.current.disconnect();
+        }
+      } catch (e) { /* Ignore disconnect errors */ }
+
+      try {
+        if (splitterRef.current) {
+          splitterRef.current.disconnect();
+        }
+      } catch (e) { /* Ignore disconnect errors */ }
+
+      // Now close the context
       if (contextRef.current && contextRef.current.state !== 'closed') {
-        contextRef.current.close();
+        try {
+          contextRef.current.close();
+        } catch (e) { /* Ignore close errors */ }
       }
     };
   }, []);
 
   return {
     audioContext,
-    analyser: analyserRef.current,
-    leftAnalyser: leftAnalyserRef.current,
-    rightAnalyser: rightAnalyserRef.current,
+    analyser,
+    leftAnalyser,
+    rightAnalyser,
     initAudio,
     connectSource,
     connectStream,

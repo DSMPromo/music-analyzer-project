@@ -28,6 +28,7 @@ import { STAGES, STAGE_STATUS } from './utils/verificationUtils';
 import FixGridPanel from './components/FixGridPanel';
 import RhythmGrid from './components/RhythmGrid';
 import RhythmGridPro from './components/RhythmGridPro';
+import RhythmVerificationPanel from './components/RhythmVerificationPanel';
 import { KnowledgeLab } from './components/knowledgelab';
 import PersonalKnowledge from './components/PersonalKnowledge';
 import TicketManager, { TicketBadge } from './components/TicketManager';
@@ -49,6 +50,9 @@ function App() {
   // Ticket manager state
   const [showTicketManager, setShowTicketManager] = useState(false);
   const [openTicketCount, setOpenTicketCount] = useState(0);
+
+  // Rhythm verification panel state
+  const [showVerificationPanel, setShowVerificationPanel] = useState(false);
 
   const audioRef = useRef(null);
   const sourceRef = useRef(null);
@@ -121,6 +125,7 @@ function App() {
     bpm: pythonBpm,
     bpmConfidence: pythonBpmConfidence,
     bpmLocked: pythonBpmLocked,
+    bpmAutoCorrected: pythonBpmAutoCorrected,
     beats: pythonBeats,
     downbeats: pythonDownbeats,
     timeSignature: pythonTimeSignature,
@@ -201,6 +206,20 @@ function App() {
   const [loadedFromCache, setLoadedFromCache] = useState(false);
   const [cacheEnabled, setCacheEnabled] = useState(true);
 
+  // Memory management constants
+  const MAX_AI_SUGGESTIONS = 50;
+
+  // Clear accumulated analysis state to prevent memory leaks
+  const clearAnalysisState = useCallback(() => {
+    setAudioBuffer(null);
+    setAiSuggestions([]);
+    setDetectedKey(null);
+    setEstimatedTempo(null);
+    setStaticPeakFreq(null);
+    setStaticRmsLevel(null);
+    clearSpectrogram();
+  }, [clearSpectrogram]);
+
   const handleAudioSelect = async (file, forceReanalyze = false) => {
     setAudioFile(file);
 
@@ -233,14 +252,23 @@ function App() {
 
     // First, decode audio to get duration for cache lookup
     let decodedBuffer = null;
+    let tempContext = null;
     try {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      const tempContext = new AudioContextClass({ sampleRate: 44100 });
+      tempContext = new AudioContextClass({ sampleRate: 44100 });
       const arrayBuffer = await fileForDecoding.arrayBuffer();
       decodedBuffer = await tempContext.decodeAudioData(arrayBuffer);
-      await tempContext.close();
     } catch (err) {
       console.error('Error decoding audio:', err);
+    } finally {
+      // Always close AudioContext to prevent memory leaks
+      if (tempContext && tempContext.state !== 'closed') {
+        try {
+          await tempContext.close();
+        } catch (e) {
+          // Ignore close errors
+        }
+      }
     }
 
     // Check cache for this file (if cache enabled and not forcing reanalyze)
@@ -665,10 +693,22 @@ function App() {
       });
 
       const data = await response.json();
-      setAiSuggestions(prev => [...prev, { query: aiQuery, response: data.suggestions }]);
+      // Bound AI suggestions to prevent unbounded memory growth
+      setAiSuggestions(prev => {
+        const updated = [...prev, { query: aiQuery, response: data.suggestions }];
+        return updated.length > MAX_AI_SUGGESTIONS
+          ? updated.slice(-MAX_AI_SUGGESTIONS)
+          : updated;
+      });
       setAiQuery('');
     } catch (err) {
-      setAiSuggestions(prev => [...prev, { query: aiQuery, response: [{ description: 'Error', suggestion: 'Could not get AI response' }] }]);
+      // Bound AI suggestions even for error responses
+      setAiSuggestions(prev => {
+        const updated = [...prev, { query: aiQuery, response: [{ description: 'Error', suggestion: 'Could not get AI response' }] }];
+        return updated.length > MAX_AI_SUGGESTIONS
+          ? updated.slice(-MAX_AI_SUGGESTIONS)
+          : updated;
+      });
     } finally {
       setIsAiLoading(false);
     }
@@ -733,6 +773,30 @@ function App() {
         isOpen={showTicketManager}
         onClose={() => setShowTicketManager(false)}
       />
+
+      {/* Rhythm Verification Panel */}
+      {showVerificationPanel && (
+        <>
+          <div className="rvp-overlay" onClick={() => setShowVerificationPanel(false)} />
+          <RhythmVerificationPanel
+            audioFile={audioFile}
+            initialBpm={effectiveTempo}
+            onHitsVerified={(result) => {
+              // Update rhythm analysis state with verified hits
+              if (result.hits) {
+                // Merge verified hits into current drum hits
+                Object.keys(result.hits).forEach(drumType => {
+                  result.hits[drumType].forEach(hit => {
+                    addDrumHit(drumType, hit.timestamp, false);
+                  });
+                });
+              }
+              setShowVerificationPanel(false);
+            }}
+            onClose={() => setShowVerificationPanel(false)}
+          />
+        </>
+      )}
 
       <main className="App-main">
         <section className="input-section">
@@ -822,7 +886,7 @@ function App() {
               }}
               onFindQuietHits={() => {
                 if (audioFile) {
-                  findQuietHits(audioFile, { startBar: 17, energyMultiplier: 0.3 });
+                  findQuietHits(audioFile, { startBar: 21, energyMultiplier: 0.3 });
                 }
               }}
               isFindingQuietHits={isFindingQuietHits}
@@ -962,6 +1026,17 @@ function App() {
                 analyzeRhythmFile(audioFile, { useAI: true });
               }
             }}
+            onVerifyHits={() => {
+              if (audioFile) {
+                setShowVerificationPanel(true);
+              }
+            }}
+            onFindQuietHits={() => {
+              if (audioFile) {
+                findQuietHits(audioFile, { startBar: 21, energyMultiplier: 0.3 });
+              }
+            }}
+            isFindingQuietHits={isFindingQuietHits}
             analysisSource={rhythmAnalysisSource}
             detectedGenre={rhythmDetectedGenre}
             genreConfidence={rhythmGenreConfidence}
@@ -1018,6 +1093,7 @@ function App() {
             usePythonRhythm={usePythonRhythm}
             rhythmAnalysisMethod={rhythmAnalysisMethod}
             swing={pythonSwing}
+            bpmAutoCorrected={pythonBpmAutoCorrected}
             onOpenFixGrid={openFixGrid}
             // Analysis source and genre
             analysisSource={rhythmAnalysisSource}

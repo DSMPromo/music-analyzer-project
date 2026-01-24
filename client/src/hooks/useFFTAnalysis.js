@@ -26,6 +26,10 @@ export function useFFTAnalysis() {
   const animationRef = useRef(null);
   const intervalRef = useRef(null);
 
+  // Reuse typed arrays to prevent memory allocation on every frame
+  const freqDataArrayRef = useRef(null);
+  const timeDataArrayRef = useRef(null);
+
   const computeChromagram = useCallback((freqData, sampleRate, fftSize) => {
     const chroma = new Array(12).fill(0);
     const binSize = sampleRate / fftSize;
@@ -101,8 +105,18 @@ export function useFFTAnalysis() {
 
     const analyser = analyserRef.current;
     const bufferLength = analyser.frequencyBinCount;
-    const freqDataArray = new Uint8Array(bufferLength);
-    const timeDataArray = new Uint8Array(bufferLength);
+
+    // Reuse typed arrays instead of creating new ones every frame
+    // This prevents ~40 allocations/sec and reduces GC pressure
+    if (!freqDataArrayRef.current || freqDataArrayRef.current.length !== bufferLength) {
+      freqDataArrayRef.current = new Uint8Array(bufferLength);
+    }
+    if (!timeDataArrayRef.current || timeDataArrayRef.current.length !== bufferLength) {
+      timeDataArrayRef.current = new Uint8Array(bufferLength);
+    }
+
+    const freqDataArray = freqDataArrayRef.current;
+    const timeDataArray = timeDataArrayRef.current;
 
     analyser.getByteFrequencyData(freqDataArray);
     analyser.getByteTimeDomainData(timeDataArray);

@@ -2,6 +2,9 @@ import { useState, useCallback, useMemo } from 'react';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
+// Memory management: limit chord history to prevent unbounded growth
+const MAX_CHORD_HISTORY = 500;
+
 const CHORD_INTERVALS = {
   major: [0, 4, 7],
   minor: [0, 3, 7],
@@ -93,7 +96,13 @@ export function useChordDetection() {
     };
 
     setCurrentChord(chord);
-    setChordHistory((prev) => [...prev, chord]);
+    // Bound chord history to prevent unbounded memory growth
+    setChordHistory((prev) => {
+      const updated = [...prev, chord];
+      return updated.length > MAX_CHORD_HISTORY
+        ? updated.slice(-MAX_CHORD_HISTORY)
+        : updated;
+    });
 
     return chord;
   }, []);

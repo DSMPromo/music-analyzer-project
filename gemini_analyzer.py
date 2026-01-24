@@ -1,13 +1,14 @@
 """
 Gemini Mix Analyzer - FastAPI Backend
-AI-powered mix analysis using Google's Gemini API with spectrogram visualization.
+AI-powered mix analysis using Google's Gemini API or OpenRouter with spectrogram visualization.
 
 Port: 56401 (within reserved range 56400-56411)
 
 Usage:
     pip install -r requirements-gemini.txt
-    pip install google-generativeai
-    export GOOGLE_API_KEY="your_key_here"
+    export GOOGLE_API_KEY="your_key_here"  # For Google Gemini
+    # OR
+    export OPENROUTER_API_KEY="your_key_here"  # For OpenRouter
     python gemini_analyzer.py
 """
 
@@ -35,16 +36,74 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import google.generativeai as genai
+from openai import OpenAI
 from PIL import Image
+import threading
+import gc
 
 # Configuration
 PORT = 56401
-DEFAULT_MODEL = 'gemini-2.0-flash'
-MAX_FILE_SIZE = 30 * 1024 * 1024  # 30MB
+DEFAULT_MODEL = 'gemini-2.5-pro'
+MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
+SETTINGS_FILE = os.path.join(os.path.dirname(__file__), '.gemini_settings.json')
 
 # Session storage for multi-turn chat (in-memory, expires after 30 minutes)
 chat_sessions = {}
 SESSION_EXPIRY_MINUTES = 30
+
+def load_settings():
+    """Load settings from file, falling back to environment variables."""
+    defaults = {
+        'provider': 'google',
+        'google_api_key': os.getenv('GOOGLE_API_KEY', ''),
+        'openrouter_api_key': os.getenv('OPENROUTER_API_KEY', ''),
+        'default_model': os.getenv('DEFAULT_MODEL', 'gemini-2.5-pro')
+    }
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, 'r') as f:
+                saved = json.load(f)
+                # Merge saved settings with defaults (env vars take precedence if set)
+                for key in defaults:
+                    if key in saved and saved[key]:
+                        # Don't override env vars if they're set
+                        if key.endswith('_api_key') and defaults[key]:
+                            continue
+                        defaults[key] = saved[key]
+    except Exception as e:
+        print(f'Error loading settings: {e}')
+    return defaults
+
+def save_settings(settings):
+    """Save settings to file for persistence."""
+    try:
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f)
+    except Exception as e:
+        print(f'Error saving settings: {e}')
+
+# API Settings storage (persisted to file)
+api_settings = load_settings()
+
+# OpenRouter models list
+OPENROUTER_MODELS = [
+    {'id': 'google/gemini-3-pro-preview', 'name': 'Gemini 3 Pro (Recommended)', 'provider': 'google'},
+    {'id': 'openai/gpt-5.2', 'name': 'GPT-5.2', 'provider': 'openai'},
+    {'id': 'openai/gpt-5.2-chat', 'name': 'GPT-5.2 Chat (Fast)', 'provider': 'openai'},
+    {'id': 'google/gemini-2.5-pro-preview-05-06', 'name': 'Gemini 2.5 Pro', 'provider': 'google'},
+    {'id': 'google/gemini-2.0-flash-exp:free', 'name': 'Gemini 2.0 Flash (Free)', 'provider': 'google'},
+    {'id': 'anthropic/claude-3.5-sonnet', 'name': 'Claude 3.5 Sonnet', 'provider': 'anthropic'},
+    {'id': 'anthropic/claude-3-opus', 'name': 'Claude 3 Opus', 'provider': 'anthropic'},
+    {'id': 'meta-llama/llama-3.2-90b-vision-instruct', 'name': 'Llama 3.2 90B Vision', 'provider': 'meta'},
+]
+
+# Google Gemini models list
+GOOGLE_MODELS = [
+    {'id': 'gemini-2.5-pro', 'name': 'Gemini 2.5 Pro', 'provider': 'google'},
+    {'id': 'gemini-2.0-flash', 'name': 'Gemini 2.0 Flash', 'provider': 'google'},
+    {'id': 'gemini-1.5-pro', 'name': 'Gemini 1.5 Pro', 'provider': 'google'},
+    {'id': 'gemini-1.5-flash', 'name': 'Gemini 1.5 Flash', 'provider': 'google'},
+]
 
 app = FastAPI(
     title='Gemini Mix Analyzer',
@@ -94,12 +153,12 @@ class AnalysisResponse(BaseModel):
 
 
 def configure_gemini():
-    """Configure the Gemini API with the API key."""
-    api_key = os.getenv('GOOGLE_API_KEY')
+    """Configure the Gemini API with the API key from settings or environment."""
+    api_key = api_settings.get('google_api_key') or os.getenv('GOOGLE_API_KEY')
     if not api_key:
         raise HTTPException(
             status_code=500,
-            detail='GOOGLE_API_KEY environment variable not set'
+            detail='Google API key not configured. Set it in Settings or via GOOGLE_API_KEY environment variable.'
         )
     genai.configure(api_key=api_key)
 
@@ -360,11 +419,16 @@ def parse_gemini_response(content: str) -> AnalysisResult:
 @app.get('/health')
 async def health_check():
     """Health check endpoint."""
-    api_key = os.getenv('GOOGLE_API_KEY')
+    provider = api_settings.get('provider', 'google')
+    if provider == 'openrouter':
+        api_key = api_settings.get('openrouter_api_key') or os.getenv('OPENROUTER_API_KEY')
+    else:
+        api_key = api_settings.get('google_api_key') or os.getenv('GOOGLE_API_KEY')
     return {
-        'status': 'ok' if api_key else 'missing_api_key',
+        'status': 'ok',  # Service is running, API key status is separate
         'service': 'gemini-analyzer',
-        'api_key_configured': bool(api_key)
+        'api_key_configured': bool(api_key),
+        'provider': provider
     }
 
 
@@ -396,6 +460,33 @@ def cleanup_expired_sessions():
     ]
     for sid in expired:
         del chat_sessions[sid]
+
+    # Run garbage collection after cleanup
+    if expired:
+        gc.collect()
+
+
+# Session cleanup timer - runs every 5 minutes regardless of requests
+_cleanup_timer_started = False
+
+def start_session_cleanup_timer():
+    """Start a background timer that cleans up expired sessions every 5 minutes."""
+    global _cleanup_timer_started
+    if _cleanup_timer_started:
+        return
+
+    def cleanup_loop():
+        cleanup_expired_sessions()
+        # Reschedule
+        timer = threading.Timer(300, cleanup_loop)  # 300 seconds = 5 minutes
+        timer.daemon = True  # Don't block process exit
+        timer.start()
+
+    # Start initial timer
+    timer = threading.Timer(300, cleanup_loop)
+    timer.daemon = True
+    timer.start()
+    _cleanup_timer_started = True
 
 
 @app.post('/analyze')
@@ -459,27 +550,33 @@ async def analyze_mix(
         # Generate spectrogram
         spectrogram_b64, spectrogram_bytes = generate_spectrogram(y, sr)
 
-        # Get the model (use provided or fall back to env/default)
-        model_name = model or os.getenv('GEMINI_MODEL', DEFAULT_MODEL)
-        gemini_model = genai.GenerativeModel(model_name)
+        # Get the model and provider
+        provider = api_settings.get('provider', 'google')
+        model_name = model or api_settings.get('default_model', DEFAULT_MODEL)
 
         # Build prompt with metrics and mode
         prompt = build_system_prompt(metrics, user_prompt, mode)
 
-        # Create PIL Image from spectrogram bytes
-        spectrogram_image = Image.open(io.BytesIO(spectrogram_bytes))
+        # Call AI based on provider
+        if provider == 'openrouter':
+            # Use OpenRouter API
+            ai_content = call_openrouter(prompt, spectrogram_b64, model_name)
+        else:
+            # Use Google Gemini API
+            configure_gemini()
+            gemini_model = genai.GenerativeModel(model_name)
+            spectrogram_image = Image.open(io.BytesIO(spectrogram_bytes))
 
-        # Call Gemini with image
-        response = gemini_model.generate_content(
-            [prompt, spectrogram_image],
-            generation_config=genai.GenerationConfig(
-                temperature=0.4,
-                max_output_tokens=2000,
+            response = gemini_model.generate_content(
+                [prompt, spectrogram_image],
+                generation_config=genai.GenerationConfig(
+                    temperature=0.4,
+                    max_output_tokens=2000,
+                )
             )
-        )
+            ai_content = response.text
 
         # Parse response
-        ai_content = response.text
         analysis = parse_gemini_response(ai_content)
 
         # Create or update session for multi-turn chat
@@ -527,9 +624,6 @@ async def chat_followup(
     Send a follow-up message in an existing chat session.
     Maintains conversation context from the initial analysis.
     """
-    # Configure Gemini
-    configure_gemini()
-
     # Cleanup expired sessions
     cleanup_expired_sessions()
 
@@ -544,9 +638,9 @@ async def chat_followup(
     # Update last activity
     session['last_activity'] = datetime.now()
 
-    # Get model
-    model_name = model or os.getenv('GEMINI_MODEL', DEFAULT_MODEL)
-    gemini_model = genai.GenerativeModel(model_name)
+    # Get provider and model
+    provider = api_settings.get('provider', 'google')
+    model_name = model or api_settings.get('default_model', DEFAULT_MODEL)
 
     # Build conversation history for context
     audio_ctx = session.get('audio_context', {})
@@ -574,16 +668,21 @@ async def chat_followup(
 
     context_prompt += f"\nUser's new question: {message}\n\nProvide a helpful, specific response based on the audio analysis context above."
 
-    # Call Gemini
-    response = gemini_model.generate_content(
-        context_prompt,
-        generation_config=genai.GenerationConfig(
-            temperature=0.6,
-            max_output_tokens=1500,
+    # Call AI based on provider
+    if provider == 'openrouter':
+        ai_response = call_openrouter_text(context_prompt, model_name)
+    else:
+        # Use Google Gemini API
+        configure_gemini()
+        gemini_model = genai.GenerativeModel(model_name)
+        response = gemini_model.generate_content(
+            context_prompt,
+            generation_config=genai.GenerationConfig(
+                temperature=0.6,
+                max_output_tokens=1500,
+            )
         )
-    )
-
-    ai_response = response.text
+        ai_response = response.text
 
     # Add to session history
     session['messages'].append({'role': 'user', 'content': message})
@@ -611,25 +710,155 @@ async def clear_session(session_id: str):
 
 @app.get('/models')
 async def list_models():
-    """List available Gemini models."""
+    """List available models based on current provider."""
+    provider = api_settings.get('provider', 'google')
+
+    if provider == 'openrouter':
+        return {
+            'provider': 'openrouter',
+            'models': OPENROUTER_MODELS,
+            'current': api_settings.get('default_model', 'google/gemini-2.0-flash-exp:free')
+        }
+    else:
+        return {
+            'provider': 'google',
+            'models': GOOGLE_MODELS,
+            'current': api_settings.get('default_model', DEFAULT_MODEL)
+        }
+
+
+@app.get('/settings')
+async def get_settings():
+    """Get current API settings (without exposing full keys)."""
     return {
-        'recommended': [
-            {'id': 'gemini-2.0-flash', 'name': 'Gemini 2.0 Flash', 'description': 'Fast and capable'},
-            {'id': 'gemini-1.5-pro', 'name': 'Gemini 1.5 Pro', 'description': 'High quality analysis'},
-            {'id': 'gemini-1.5-flash', 'name': 'Gemini 1.5 Flash', 'description': 'Balanced speed/quality'},
-        ],
-        'current': os.getenv('GEMINI_MODEL', DEFAULT_MODEL)
+        'provider': api_settings.get('provider', 'google'),
+        'google_api_key_set': bool(api_settings.get('google_api_key')),
+        'openrouter_api_key_set': bool(api_settings.get('openrouter_api_key')),
+        'default_model': api_settings.get('default_model', DEFAULT_MODEL),
+        'google_api_key_preview': mask_api_key(api_settings.get('google_api_key', '')),
+        'openrouter_api_key_preview': mask_api_key(api_settings.get('openrouter_api_key', '')),
     }
+
+
+@app.post('/settings')
+async def update_settings(
+    provider: Optional[str] = Form(default=None),
+    google_api_key: Optional[str] = Form(default=None),
+    openrouter_api_key: Optional[str] = Form(default=None),
+    default_model: Optional[str] = Form(default=None)
+):
+    """Update API settings."""
+    if provider is not None:
+        if provider not in ['google', 'openrouter']:
+            raise HTTPException(status_code=400, detail='Invalid provider. Use "google" or "openrouter"')
+        api_settings['provider'] = provider
+
+    if google_api_key is not None:
+        api_settings['google_api_key'] = google_api_key
+
+    if openrouter_api_key is not None:
+        api_settings['openrouter_api_key'] = openrouter_api_key
+
+    if default_model is not None:
+        api_settings['default_model'] = default_model
+
+    # Persist settings to file
+    save_settings(api_settings)
+
+    return {
+        'status': 'updated',
+        'provider': api_settings['provider'],
+        'google_api_key_set': bool(api_settings.get('google_api_key')),
+        'openrouter_api_key_set': bool(api_settings.get('openrouter_api_key')),
+        'default_model': api_settings.get('default_model')
+    }
+
+
+def mask_api_key(key: str) -> str:
+    """Mask API key for display, showing only first 4 and last 4 chars."""
+    if not key or len(key) < 12:
+        return '****' if key else ''
+    return f'{key[:4]}...{key[-4:]}'
+
+
+def call_openrouter(prompt: str, image_b64: str, model: str) -> str:
+    """Call OpenRouter API with image support."""
+    api_key = api_settings.get('openrouter_api_key')
+    if not api_key:
+        raise HTTPException(status_code=400, detail='OpenRouter API key not configured')
+
+    client = OpenAI(
+        base_url='https://openrouter.ai/api/v1',
+        api_key=api_key
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': prompt},
+                        {
+                            'type': 'image_url',
+                            'image_url': {
+                                'url': f'data:image/png;base64,{image_b64}'
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=2000,
+            temperature=0.4
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        error_msg = str(e)
+        print(f'OpenRouter API error: {error_msg}')
+        raise HTTPException(status_code=500, detail=f'OpenRouter API error: {error_msg}')
+
+
+def call_openrouter_text(prompt: str, model: str) -> str:
+    """Call OpenRouter API for text-only (chat follow-ups)."""
+    api_key = api_settings.get('openrouter_api_key')
+    if not api_key:
+        raise HTTPException(status_code=400, detail='OpenRouter API key not configured')
+
+    client = OpenAI(
+        base_url='https://openrouter.ai/api/v1',
+        api_key=api_key
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{'role': 'user', 'content': prompt}],
+            max_tokens=1500,
+            temperature=0.6
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        error_msg = str(e)
+        print(f'OpenRouter API error: {error_msg}')
+        raise HTTPException(status_code=500, detail=f'OpenRouter API error: {error_msg}')
 
 
 if __name__ == '__main__':
     import uvicorn
-    print(f'Starting Gemini Mix Analyzer on port {PORT}')
-    print(f'Gemini model: {os.getenv("GEMINI_MODEL", DEFAULT_MODEL)}')
 
-    api_key = os.getenv('GOOGLE_API_KEY')
-    if api_key:
-        print('GOOGLE_API_KEY is configured')
+    # Start session cleanup timer for memory management
+    start_session_cleanup_timer()
+    print('Session cleanup timer started (runs every 5 minutes)')
+
+    print(f'Starting Gemini Mix Analyzer on port {PORT}')
+    print(f'Default model: {api_settings.get("default_model", DEFAULT_MODEL)}')
+    print(f'Provider: {api_settings.get("provider", "google")}')
+
+    if api_settings.get('google_api_key'):
+        print('Google API key: configured')
+    if api_settings.get('openrouter_api_key'):
+        print('OpenRouter API key: configured')
     else:
         print('WARNING: GOOGLE_API_KEY not set! Set it with:')
         print('  export GOOGLE_API_KEY="your_api_key_here"')

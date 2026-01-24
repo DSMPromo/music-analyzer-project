@@ -12,6 +12,9 @@ const DRUM_TYPES = ['kick', 'snare', 'hihat', 'clap', 'tom', 'perc'];
 const SAMPLE_RATE = 44100;
 const FFT_SIZE = 2048;
 
+// Memory management: limit hits per drum type to prevent unbounded growth
+const MAX_HITS_PER_DRUM = 2000;
+
 // Drum-specific detection settings
 // Uses both absolute energy threshold AND spectral flux for better detection
 const DRUM_SETTINGS = {
@@ -197,7 +200,11 @@ export function useDrumDetection(initialTempo = 120, timeSignature = '4/4') {
       setDrumHits(prev => {
         const updated = { ...prev };
         for (const [drumType, hit] of Object.entries(newHits)) {
-          updated[drumType] = [...prev[drumType], hit];
+          // Bound hits per drum type to prevent unbounded memory growth
+          const newArray = [...prev[drumType], hit];
+          updated[drumType] = newArray.length > MAX_HITS_PER_DRUM
+            ? newArray.slice(-MAX_HITS_PER_DRUM)
+            : newArray;
         }
         return updated;
       });
@@ -325,10 +332,16 @@ export function useDrumDetection(initialTempo = 120, timeSignature = '4/4') {
       subBeat,
     };
 
-    setManualHits(prev => ({
-      ...prev,
-      [drumType]: [...prev[drumType], hit],
-    }));
+    // Bound manual hits to prevent unbounded memory growth
+    setManualHits(prev => {
+      const newArray = [...prev[drumType], hit];
+      return {
+        ...prev,
+        [drumType]: newArray.length > MAX_HITS_PER_DRUM
+          ? newArray.slice(-MAX_HITS_PER_DRUM)
+          : newArray,
+      };
+    });
   }, [tempo, beatsPerBar]);
 
   /**

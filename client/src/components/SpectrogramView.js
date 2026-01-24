@@ -1,3 +1,25 @@
+/**
+ * @module SpectrogramView
+ * @description React component for professional spectrogram visualization
+ *
+ * Displays a full-file spectrogram with iZotope RX-style heat map colors,
+ * stereo L/R channel display, playhead synchronization, click-to-seek,
+ * and frequency/time axes with hover tooltips.
+ *
+ * ## Features
+ * - Full-file spectrogram (pre-computed when audio loads)
+ * - Stereo L/R stacked channel views with mono toggle
+ * - Logarithmic frequency scale (20Hz to 20kHz)
+ * - iZotope RX-style heat map (blue to yellow)
+ * - Playhead synced with audio playback
+ * - Click anywhere to seek to that time
+ * - Hover tooltips showing frequency, dB, and time
+ * - Problem markers overlay for mix issues
+ *
+ * @author Music Analyzer Team
+ * @version 1.0.0
+ */
+
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { useSpectrogramGenerator } from '../hooks/useSpectrogramGenerator';
 import {
@@ -13,8 +35,33 @@ import {
 
 /**
  * SpectrogramView Component
+ *
  * Professional spectrogram visualization with L/R channel display,
- * playhead sync, click-to-seek, and frequency/time axes
+ * playhead sync, click-to-seek, and frequency/time axes.
+ *
+ * @component
+ * @param {Object} props - Component props
+ * @param {AudioBuffer} props.audioBuffer - Decoded audio buffer to visualize
+ * @param {number} [props.currentTime=0] - Current playback time in seconds
+ * @param {number} [props.duration=0] - Total audio duration in seconds
+ * @param {boolean} [props.isPlaying=false] - Whether audio is currently playing
+ * @param {function} [props.onSeek] - Callback when clicking to seek (receives time)
+ * @param {number} [props.height=300] - Total height for both channels
+ * @param {boolean} [props.showStereo=true] - Enable stereo L/R display
+ * @param {Array} [props.problemMarkers=[]] - Problem markers to overlay
+ * @param {function} [props.onHover] - Callback on hover (receives hover info)
+ * @returns {JSX.Element} Spectrogram view component
+ *
+ * @example
+ * <SpectrogramView
+ *   audioBuffer={audioBuffer}
+ *   currentTime={currentTime}
+ *   duration={duration}
+ *   isPlaying={isPlaying}
+ *   onSeek={(time) => audioRef.current.currentTime = time}
+ *   height={300}
+ *   problemMarkers={mixAnalysis.getProblemMarkers()}
+ * />
  */
 function SpectrogramView({
   audioBuffer,
@@ -25,13 +72,19 @@ function SpectrogramView({
   height = 300,
   showStereo = true,
   problemMarkers = [],
-  onHover = null
+  onHover = null,
+  skipGeneration = false,  // Skip spectrogram generation (when loaded from cache)
 }) {
   // Refs
   const containerRef = useRef(null);
   const spectrogramCanvasRef = useRef(null);
   const overlayCanvasRef = useRef(null);
   const animationRef = useRef(null);
+
+  // Reusable temp canvases to prevent creating thousands during playback
+  const tempCanvasLeftRef = useRef(null);
+  const tempCanvasRightRef = useRef(null);
+  const tempCanvasMonoRef = useRef(null);
 
   // State
   const [containerWidth, setContainerWidth] = useState(800);
@@ -83,6 +136,8 @@ function SpectrogramView({
   }, []);
 
   // Generate spectrogram when audioBuffer changes
+  // Note: We always generate spectrogram since it's needed for display
+  // The cache only stores metadata (key, tempo) not the spectrogram itself
   useEffect(() => {
     if (audioBuffer) {
       generateSpectrogram(audioBuffer, {
@@ -111,9 +166,12 @@ function SpectrogramView({
       // Draw stereo view (L on top, R on bottom)
       const channelHeight = Math.floor(spectrogramHeight / 2);
 
-      // Left channel
+      // Left channel - reuse temp canvas to prevent memory allocation
       if (spectrogramData.left.imageData) {
-        const tempCanvas = document.createElement('canvas');
+        if (!tempCanvasLeftRef.current) {
+          tempCanvasLeftRef.current = document.createElement('canvas');
+        }
+        const tempCanvas = tempCanvasLeftRef.current;
         tempCanvas.width = spectrogramData.left.imageData.width;
         tempCanvas.height = spectrogramData.left.imageData.height;
         const tempCtx = tempCanvas.getContext('2d');
@@ -129,9 +187,12 @@ function SpectrogramView({
       ctx.lineTo(canvas.width, channelHeight);
       ctx.stroke();
 
-      // Right channel
+      // Right channel - reuse temp canvas to prevent memory allocation
       if (spectrogramData.right.imageData) {
-        const tempCanvas = document.createElement('canvas');
+        if (!tempCanvasRightRef.current) {
+          tempCanvasRightRef.current = document.createElement('canvas');
+        }
+        const tempCanvas = tempCanvasRightRef.current;
         tempCanvas.width = spectrogramData.right.imageData.width;
         tempCanvas.height = spectrogramData.right.imageData.height;
         const tempCtx = tempCanvas.getContext('2d');
@@ -146,9 +207,12 @@ function SpectrogramView({
       ctx.fillText('R', 5, channelHeight + 15);
 
     } else {
-      // Mono view
+      // Mono view - reuse temp canvas to prevent memory allocation
       if (spectrogramData.mono.imageData) {
-        const tempCanvas = document.createElement('canvas');
+        if (!tempCanvasMonoRef.current) {
+          tempCanvasMonoRef.current = document.createElement('canvas');
+        }
+        const tempCanvas = tempCanvasMonoRef.current;
         tempCanvas.width = spectrogramData.mono.imageData.width;
         tempCanvas.height = spectrogramData.mono.imageData.height;
         const tempCtx = tempCanvas.getContext('2d');

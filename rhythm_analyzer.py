@@ -26,6 +26,7 @@ import numpy as np
 import librosa
 import soundfile as sf
 from scipy import signal
+import gc  # For explicit memory cleanup after large array operations
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -515,6 +516,56 @@ def detect_onsets_librosa(y: np.ndarray, sr: int) -> np.ndarray:
     return onset_times
 
 
+def apply_hpss_preprocessing(y: np.ndarray, sr: int) -> np.ndarray:
+    """
+    Apply Harmonic/Percussive Source Separation to isolate drums.
+
+    This dramatically improves drum detection by removing:
+    - Bass lines (harmonic)
+    - Synth pads (harmonic)
+    - Vocals (harmonic)
+    - Melodic elements (harmonic)
+
+    Leaving only:
+    - Drums (percussive)
+    - Transients (percussive)
+    """
+    logger.info('Applying HPSS preprocessing to isolate percussive content...')
+
+    D = None
+    H = None
+    P = None
+
+    try:
+        # Compute STFT
+        D = librosa.stft(y)
+
+        # Separate harmonic and percussive components
+        # margin parameter controls separation strength (higher = stricter)
+        H, P = librosa.decompose.hpss(D, margin=3.0)
+
+        # Convert percussive component back to audio
+        y_percussive = librosa.istft(P, length=len(y))
+
+        # Normalize
+        max_val = np.max(np.abs(y_percussive))
+        if max_val > 0:
+            y_percussive = y_percussive / max_val
+
+        logger.info(f'HPSS complete: percussive RMS = {np.sqrt(np.mean(y_percussive**2)):.4f}')
+        return y_percussive
+
+    except Exception as e:
+        logger.warning(f'HPSS failed ({e}), using original audio')
+        return y
+
+    finally:
+        # Explicit cleanup of large STFT matrices to prevent memory leaks
+        # These can be 1-3GB for long audio files
+        del D, H, P
+        gc.collect()
+
+
 def detect_drums_beat_aligned(y: np.ndarray, sr: int, beats: np.ndarray, time_signature: int = 4) -> Dict[str, List[float]]:
     """
     Beat-aligned drum detection - checks for drum energy AT beat positions.
@@ -522,13 +573,18 @@ def detect_drums_beat_aligned(y: np.ndarray, sr: int, beats: np.ndarray, time_si
     This is more reliable than free transcription because:
     1. We know WHERE to look (on the beat grid)
     2. We just check IF there's appropriate energy there
+    3. HPSS preprocessing isolates drums from harmonic content
 
     Approach:
+    - HPSS: First separate percussive from harmonic content
     - Kick: Check for low frequency energy on beats 1 & 3 (or all beats for EDM)
     - Snare: Check for mid+high frequency energy on beats 2 & 4
     - Hi-hat: Check for high frequency energy on all 8th notes
     """
     logger.info('Running beat-aligned drum detection...')
+
+    # Apply HPSS to isolate percussive content
+    y_perc = apply_hpss_preprocessing(y, sr)
 
     from scipy.signal import butter, sosfilt
 
@@ -555,10 +611,11 @@ def detect_drums_beat_aligned(y: np.ndarray, sr: int, beats: np.ndarray, time_si
         segment = audio[start:end]
         return float(np.sqrt(np.mean(segment ** 2)))
 
-    # Pre-filter audio for each frequency band
-    y_low = bandpass_filter(y, 30, 150, sr)      # Kick band
-    y_mid = bandpass_filter(y, 150, 2000, sr)    # Snare body
-    y_high = bandpass_filter(y, 5000, min(16000, sr/2-100), sr)  # Hi-hat/cymbal
+    # Pre-filter PERCUSSIVE audio for each frequency band
+    # Using y_perc (HPSS output) gives much cleaner drum detection
+    y_low = bandpass_filter(y_perc, 20, 300, sr)      # Kick band (sub-bass to punch)
+    y_mid = bandpass_filter(y_perc, 150, 2000, sr)    # Snare body
+    y_high = bandpass_filter(y_perc, 5000, min(16000, sr/2-100), sr)  # Hi-hat/cymbal
 
     # Calculate energy thresholds from the full track
     # Use median as baseline, detect hits above threshold
@@ -583,43 +640,74 @@ def detect_drums_beat_aligned(y: np.ndarray, sr: int, beats: np.ndarray, time_si
     if len(beats) > 0:
         eighth_notes.append(beats[-1])
 
-    # Process each beat
+    # Calculate 16th note positions (for trap 808s and rolling hats)
+    sixteenth_notes = []
+    for i in range(len(beats) - 1):
+        beat_duration = beats[i+1] - beats[i]
+        sixteenth_notes.append(beats[i])                           # 1
+        sixteenth_notes.append(beats[i] + beat_duration * 0.25)    # 1e
+        sixteenth_notes.append(beats[i] + beat_duration * 0.5)     # 1&
+        sixteenth_notes.append(beats[i] + beat_duration * 0.75)    # 1a
+    if len(beats) > 0:
+        sixteenth_notes.append(beats[-1])
+
+    # Process each beat for snares/claps (only on-beat)
     for i, beat_time in enumerate(beats):
         beat_in_bar = i % time_signature  # 0, 1, 2, 3 for 4/4
 
-        low_energy = get_energy_at_time(y_low, sr, beat_time)
         mid_energy = get_energy_at_time(y_mid, sr, beat_time)
         high_energy = get_energy_at_time(y_high, sr, beat_time)
-
-        # KICK: Low energy on beats 1 and 3 (most common), or any beat with strong low
-        # Use lower threshold (0.5x) for expected kick positions (beats 1 & 3)
-        if beat_in_bar in [0, 2]:  # Beats 1 and 3 (0-indexed)
-            if low_energy > low_threshold * 0.5:
-                results['kick'].append(beat_time)
-        else:
-            # Higher threshold for unexpected positions (beats 2 & 4)
-            if low_energy > low_threshold * 1.2:
-                results['kick'].append(beat_time)
+        low_energy = get_energy_at_time(y_low, sr, beat_time)
 
         # SNARE: Must have mid energy AND mid must dominate over low (not just kick harmonics)
         # Only on beats 2 and 4
         if beat_in_bar in [1, 3]:
             # Snare needs mid energy to be significant AND higher than low (kick)
-            if mid_energy > mid_threshold * 1.5 and mid_energy > low_energy * 0.8:
+            if mid_energy > mid_threshold * 1.2 and mid_energy > low_energy * 0.6:
                 results['snare'].append(beat_time)
 
         # CLAP: Needs both mid and high, and must be stronger than surrounding
         if beat_in_bar in [1, 3]:
-            if mid_energy > mid_threshold * 1.8 and high_energy > high_threshold * 1.5:
+            if mid_energy > mid_threshold * 1.5 and high_energy > high_threshold * 1.2:
                 results['clap'].append(beat_time)
 
-    # HI-HAT: Check all 8th note positions
-    # Must have high frequency energy that dominates (not just kick/snare harmonics)
+    # KICK/808: Check on-beat positions with adaptive thresholds
+    # Use percentile-based detection instead of fixed multipliers
+    all_low_energies = [get_energy_at_time(y_low, sr, t) for t in sixteenth_notes]
+    kick_threshold_adaptive = np.percentile(all_low_energies, 60) if all_low_energies else low_threshold
+
+    for idx, sixteenth_time in enumerate(sixteenth_notes):
+        low_energy = get_energy_at_time(y_low, sr, sixteenth_time)
+
+        beat_idx = idx // 4
+        sub_idx = idx % 4
+        beat_in_bar = beat_idx % time_signature
+        position_in_bar = beat_in_bar * 4 + sub_idx
+
+        # Only check main beat positions (skip random 16th notes)
+        # Beats 1 and 3 (positions 0, 8) - primary kick positions
+        if position_in_bar in [0, 8]:
+            if low_energy > kick_threshold_adaptive:
+                results['kick'].append(sixteenth_time)
+        # Beats 2 and 4 (positions 4, 12) - secondary
+        elif position_in_bar in [4, 12]:
+            if low_energy > kick_threshold_adaptive * 1.2:
+                results['kick'].append(sixteenth_time)
+        # Syncopated 8th notes (positions 2, 6, 10, 14)
+        elif position_in_bar in [2, 6, 10, 14]:
+            if low_energy > kick_threshold_adaptive * 1.1:
+                results['kick'].append(sixteenth_time)
+
+    # HI-HAT: Check 8th note positions with adaptive threshold
+    all_high_energies = [get_energy_at_time(y_high, sr, t) for t in eighth_notes]
+    hihat_threshold_adaptive = np.percentile(all_high_energies, 50) if all_high_energies else high_threshold
+
     for eighth_time in eighth_notes:
         high_energy = get_energy_at_time(y_high, sr, eighth_time)
         low_energy = get_energy_at_time(y_low, sr, eighth_time)
-        # Hihat needs high energy to be significant AND higher than low energy
-        if high_energy > high_threshold * 1.2 and high_energy > low_energy * 0.5:
+
+        # Hihat: high frequency must be present and dominate over low
+        if high_energy > hihat_threshold_adaptive and high_energy > low_energy * 0.8:
             results['hihat'].append(eighth_time)
 
     # Remove duplicates and sort
@@ -1568,6 +1656,38 @@ Return ONLY the JSON array, no explanation."""
         raise HTTPException(status_code=500, detail=f'Gemini analysis failed: {e}')
 
 
+def correct_half_time_beats(bpm: float, beats: List[float], downbeats: List[Dict]) -> tuple:
+    """
+    If BPM < 90, it's likely half-time detection.
+    Double the BPM and interpolate beats.
+    """
+    if bpm >= 90:
+        return bpm, beats, downbeats
+
+    # Double the BPM
+    corrected_bpm = bpm * 2
+    logger.info(f'Half-time correction: {bpm:.1f} -> {corrected_bpm:.1f} BPM')
+
+    # Interpolate beats - add a beat between each existing beat
+    corrected_beats = []
+    for i in range(len(beats) - 1):
+        corrected_beats.append(beats[i])
+        # Add interpolated beat halfway between
+        mid_beat = (beats[i] + beats[i + 1]) / 2
+        corrected_beats.append(mid_beat)
+    if beats:
+        corrected_beats.append(beats[-1])
+
+    # Update downbeats (every 4th beat in corrected grid = every 2nd original)
+    corrected_downbeats = []
+    for i, t in enumerate(corrected_beats):
+        if i % 4 == 0:  # Every 4 beats (1 bar in 4/4)
+            corrected_downbeats.append({'time': t, 'beat_position': 1})
+
+    logger.info(f'Interpolated {len(beats)} -> {len(corrected_beats)} beats')
+    return corrected_bpm, corrected_beats, corrected_downbeats
+
+
 @app.post('/analyze-rhythm-ai')
 async def analyze_rhythm_with_ai(
     audio: UploadFile = File(...),
@@ -1598,8 +1718,13 @@ async def analyze_rhythm_with_ai(
         beat_result, method = detect_beats(str(temp_path), y, sr)
         logger.info(f'Detected {beat_result.bpm:.1f} BPM, {len(beat_result.beats)} beats')
 
-        # Step 2: Beat-aligned drum detection (reliable method)
-        beats_array = np.array(beat_result.beats)
+        # Step 1b: Correct half-time detection (BPM < 90 -> double it)
+        corrected_bpm, corrected_beats, corrected_downbeats = correct_half_time_beats(
+            beat_result.bpm, beat_result.beats, beat_result.downbeats
+        )
+
+        # Step 2: Beat-aligned drum detection with CORRECTED beats
+        beats_array = np.array(corrected_beats)
         beat_aligned_hits = detect_drums_beat_aligned(
             y, sr, beats_array, beat_result.time_signature
         )
@@ -1644,10 +1769,10 @@ async def analyze_rhythm_with_ai(
                    f'{len([h for h in hits if h.type=="hihat"])} hihats')
 
         return RhythmAnalysisResult(
-            bpm=beat_result.bpm,
+            bpm=corrected_bpm,  # Use corrected BPM (doubled if half-time)
             bpm_confidence=beat_result.bpm_confidence,
-            beats=beat_result.beats,
-            downbeats=beat_result.downbeats,
+            beats=corrected_beats,  # Use interpolated beats
+            downbeats=corrected_downbeats,  # Use corrected downbeats
             time_signature=beat_result.time_signature,
             hits=[h.model_dump() for h in hits],
             swing=swing,
@@ -1664,6 +1789,382 @@ async def analyze_rhythm_with_ai(
     finally:
         if temp_path.exists():
             temp_path.unlink()
+
+
+# =============================================================================
+# Step-by-Step Verification Endpoint
+# =============================================================================
+
+class StepResult(BaseModel):
+    """Result for a single detection step"""
+    step_name: str
+    drum_type: Optional[str] = None
+    hits: List[Dict] = []
+    hit_count: int = 0
+    threshold_used: float = 0.0
+    energy_stats: Dict = {}
+    status: str = 'pending'  # pending, complete, skipped
+
+
+class StepByStepResult(BaseModel):
+    """Full step-by-step analysis result"""
+    bpm: float
+    bpm_confidence: float
+    beats: List[float]
+    downbeats: List[Dict]
+    time_signature: int
+    duration: float
+    steps: List[StepResult]
+    detected_genre: Optional[str] = None
+    genre_confidence: float = 0.0
+
+
+def detect_drums_with_sensitivity(
+    y: np.ndarray,
+    sr: int,
+    beats: np.ndarray,
+    time_signature: int,
+    sensitivities: Dict[str, float]
+) -> Dict[str, Dict]:
+    """
+    Drum detection with adjustable per-instrument sensitivity.
+    Returns hits AND energy stats for verification UI.
+
+    sensitivities: {'kick': 0.5, 'snare': 0.5, 'hihat': 0.5, ...}
+    where 0.0 = very sensitive (detect everything), 1.0 = strict (detect only strong hits)
+    """
+    # Apply HPSS to isolate percussive content
+    y_perc = apply_hpss_preprocessing(y, sr)
+
+    from scipy.signal import butter, sosfilt
+
+    def bandpass_filter(data, lowcut, highcut, fs, order=4):
+        nyq = 0.5 * fs
+        low = max(lowcut / nyq, 0.01)
+        high = min(highcut / nyq, 0.99)
+        if low >= high:
+            return data
+        try:
+            sos = butter(order, [low, high], btype='band', output='sos')
+            return sosfilt(sos, data)
+        except:
+            return data
+
+    def get_energy_at_time(audio, sample_rate, time_sec, window_ms=30):
+        center = int(time_sec * sample_rate)
+        half_window = int(window_ms * sample_rate / 1000 / 2)
+        start = max(0, center - half_window)
+        end = min(len(audio), center + half_window)
+        if end <= start:
+            return 0.0
+        segment = audio[start:end]
+        return float(np.sqrt(np.mean(segment ** 2)))
+
+    # Pre-filter PERCUSSIVE audio (HPSS output)
+    y_low = bandpass_filter(y_perc, 20, 300, sr)      # Kick band (sub-bass to punch)
+    y_mid = bandpass_filter(y_perc, 150, 2000, sr)    # Snare body
+    y_high = bandpass_filter(y_perc, 5000, min(16000, sr/2-100), sr)  # Hi-hat/cymbal
+
+    # Calculate base thresholds
+    low_energies = [get_energy_at_time(y_low, sr, t) for t in beats]
+    mid_energies = [get_energy_at_time(y_mid, sr, t) for t in beats]
+    high_energies = [get_energy_at_time(y_high, sr, t) for t in beats]
+
+    base_low = np.median(low_energies) if low_energies else 0.01
+    base_mid = np.median(mid_energies) if mid_energies else 0.01
+    base_high = np.median(high_energies) if high_energies else 0.01
+
+    results = {}
+
+    # 16th note grid
+    sixteenth_notes = []
+    for i in range(len(beats) - 1):
+        beat_duration = beats[i+1] - beats[i]
+        for j in range(4):
+            sixteenth_notes.append(beats[i] + beat_duration * j * 0.25)
+    if len(beats) > 0:
+        sixteenth_notes.append(beats[-1])
+
+    # === KICK ===
+    kick_sens = sensitivities.get('kick', 0.5)
+
+    # Collect all energies first for percentile-based threshold
+    all_kick_energies = [get_energy_at_time(y_low, sr, t) for t in sixteenth_notes]
+    # Sensitivity adjusts the percentile: 0 = 40th percentile (sensitive), 1 = 80th (strict)
+    percentile = 40 + kick_sens * 40
+    kick_threshold = np.percentile(all_kick_energies, percentile) if all_kick_energies else base_low
+    kick_hits = []
+    kick_energies = []
+
+    for idx, t in enumerate(sixteenth_notes):
+        energy = get_energy_at_time(y_low, sr, t)
+        kick_energies.append({'time': t, 'energy': energy})
+
+        beat_idx = idx // 4
+        sub_idx = idx % 4
+        beat_in_bar = beat_idx % time_signature
+        position_in_bar = beat_in_bar * 4 + sub_idx
+
+        # Only check main beat and 8th note positions
+        if position_in_bar in [0, 8]:  # Beats 1 and 3
+            thresh = kick_threshold
+        elif position_in_bar in [4, 12]:  # Beats 2 and 4
+            thresh = kick_threshold * 1.15
+        elif position_in_bar in [2, 6, 10, 14]:  # 8th notes
+            thresh = kick_threshold * 1.1
+        else:
+            continue  # Skip 16th note positions
+
+        if energy > thresh:
+            kick_hits.append({'time': float(t), 'type': 'kick', 'confidence': min(energy / thresh, 1.0), 'energy': energy})
+
+    results['kick'] = {
+        'hits': kick_hits,
+        'threshold': kick_threshold,
+        'energy_stats': {
+            'median': float(base_low),
+            'max': float(max(e['energy'] for e in kick_energies)) if kick_energies else 0,
+            'min': float(min(e['energy'] for e in kick_energies)) if kick_energies else 0,
+        }
+    }
+
+    # === SNARE ===
+    snare_sens = sensitivities.get('snare', 0.5)
+    snare_threshold = base_mid * (0.8 + snare_sens * 0.8)
+    snare_hits = []
+    snare_energies = []
+
+    for i, beat_time in enumerate(beats):
+        beat_in_bar = i % time_signature
+        if beat_in_bar in [1, 3]:
+            mid_energy = get_energy_at_time(y_mid, sr, beat_time)
+            low_energy = get_energy_at_time(y_low, sr, beat_time)
+            snare_energies.append({'time': beat_time, 'energy': mid_energy})
+
+            if mid_energy > snare_threshold and mid_energy > low_energy * 0.5:
+                snare_hits.append({'time': float(beat_time), 'type': 'snare', 'confidence': min(mid_energy / snare_threshold, 1.0), 'energy': mid_energy})
+
+    results['snare'] = {
+        'hits': snare_hits,
+        'threshold': snare_threshold,
+        'energy_stats': {
+            'median': float(base_mid),
+            'max': float(max(e['energy'] for e in snare_energies)) if snare_energies else 0,
+            'min': float(min(e['energy'] for e in snare_energies)) if snare_energies else 0,
+        }
+    }
+
+    # === CLAP ===
+    clap_sens = sensitivities.get('clap', 0.5)
+    clap_threshold_mid = base_mid * (1.0 + clap_sens * 0.8)
+    clap_threshold_high = base_high * (0.8 + clap_sens * 0.6)
+    clap_hits = []
+
+    for i, beat_time in enumerate(beats):
+        beat_in_bar = i % time_signature
+        if beat_in_bar in [1, 3]:
+            mid_energy = get_energy_at_time(y_mid, sr, beat_time)
+            high_energy = get_energy_at_time(y_high, sr, beat_time)
+
+            if mid_energy > clap_threshold_mid and high_energy > clap_threshold_high:
+                clap_hits.append({'time': float(beat_time), 'type': 'clap', 'confidence': 0.85, 'energy': mid_energy})
+
+    results['clap'] = {
+        'hits': clap_hits,
+        'threshold': clap_threshold_mid,
+        'energy_stats': {'median': float(base_mid)}
+    }
+
+    # === HIHAT ===
+    hihat_sens = sensitivities.get('hihat', 0.5)
+
+    # Calculate 8th note positions
+    eighth_notes_times = []
+    for i in range(len(beats) - 1):
+        eighth_notes_times.append(beats[i])
+        eighth_notes_times.append((beats[i] + beats[i+1]) / 2)
+    if len(beats) > 0:
+        eighth_notes_times.append(beats[-1])
+
+    # Collect all high energies for percentile-based threshold
+    all_hihat_energies = [get_energy_at_time(y_high, sr, t) for t in eighth_notes_times]
+    percentile = 40 + hihat_sens * 40
+    hihat_threshold = np.percentile(all_hihat_energies, percentile) if all_hihat_energies else base_high
+    hihat_hits = []
+    hihat_energies = []
+
+    for t in eighth_notes_times:
+        high_energy = get_energy_at_time(y_high, sr, t)
+        low_energy = get_energy_at_time(y_low, sr, t)
+        hihat_energies.append({'time': t, 'energy': high_energy})
+
+        # Hihat: high frequency present and somewhat dominant over low
+        if high_energy > hihat_threshold and high_energy > low_energy * 0.7:
+            hihat_hits.append({'time': float(t), 'type': 'hihat', 'confidence': min(high_energy / hihat_threshold, 1.0), 'energy': high_energy})
+
+    results['hihat'] = {
+        'hits': hihat_hits,
+        'threshold': hihat_threshold,
+        'energy_stats': {
+            'median': float(base_high),
+            'max': float(max(e['energy'] for e in hihat_energies)) if hihat_energies else 0,
+            'min': float(min(e['energy'] for e in hihat_energies)) if hihat_energies else 0,
+        }
+    }
+
+    return results
+
+
+@app.post('/analyze-rhythm-steps')
+async def analyze_rhythm_step_by_step(
+    audio: UploadFile = File(...),
+    kick_sensitivity: float = Form(0.5),
+    snare_sensitivity: float = Form(0.5),
+    hihat_sensitivity: float = Form(0.5),
+    clap_sensitivity: float = Form(0.5),
+):
+    """
+    Step-by-step rhythm analysis with adjustable sensitivity per instrument.
+    Returns intermediate results for verification UI.
+
+    Sensitivity: 0.0 = detect everything (very sensitive)
+                 1.0 = strict (only strong hits)
+    """
+    start_time = time.time()
+    file_id = str(uuid.uuid4())[:8]
+    temp_path = TEMP_DIR / f'{file_id}_{audio.filename}'
+
+    try:
+        content = await audio.read()
+        with open(temp_path, 'wb') as f:
+            f.write(content)
+
+        y, sr = load_audio(str(temp_path))
+        duration = len(y) / sr
+
+        logger.info(f'Step-by-step analysis: {duration:.1f}s, sensitivities: kick={kick_sensitivity}, snare={snare_sensitivity}, hihat={hihat_sensitivity}')
+
+        steps = []
+
+        # Step 1: Beat Detection
+        beat_result, method = detect_beats(str(temp_path), y, sr)
+
+        # Step 1b: Correct half-time detection (BPM < 90 -> double it)
+        corrected_bpm, corrected_beats, corrected_downbeats = correct_half_time_beats(
+            beat_result.bpm, beat_result.beats, beat_result.downbeats
+        )
+
+        steps.append(StepResult(
+            step_name='Beat Detection',
+            hit_count=len(corrected_beats),
+            status='complete',
+            energy_stats={
+                'bpm': corrected_bpm,
+                'original_bpm': beat_result.bpm,
+                'confidence': beat_result.bpm_confidence,
+                'method': method,
+                'half_time_corrected': corrected_bpm != beat_result.bpm
+            }
+        ))
+
+        # Step 2-5: Per-instrument detection with sensitivity
+        sensitivities = {
+            'kick': kick_sensitivity,
+            'snare': snare_sensitivity,
+            'hihat': hihat_sensitivity,
+            'clap': clap_sensitivity,
+        }
+
+        # Use CORRECTED beats for detection
+        beats_array = np.array(corrected_beats)
+        detection_results = detect_drums_with_sensitivity(
+            y, sr, beats_array, beat_result.time_signature, sensitivities
+        )
+
+        # Add step for each drum type
+        for drum_type in ['kick', 'snare', 'hihat', 'clap']:
+            result = detection_results.get(drum_type, {'hits': [], 'threshold': 0, 'energy_stats': {}})
+            steps.append(StepResult(
+                step_name=f'{drum_type.title()} Detection',
+                drum_type=drum_type,
+                hits=result['hits'],
+                hit_count=len(result['hits']),
+                threshold_used=result['threshold'],
+                energy_stats=result['energy_stats'],
+                status='complete'
+            ))
+
+        # Detect genre
+        all_hits = []
+        for drum_type, data in detection_results.items():
+            for hit in data['hits']:
+                all_hits.append(DrumHit(time=hit['time'], type=drum_type, confidence=hit['confidence']))
+
+        detected_genre, genre_confidence = detect_genre(corrected_bpm, all_hits, 50)
+
+        elapsed = time.time() - start_time
+        logger.info(f'Step-by-step analysis complete in {elapsed:.2f}s')
+
+        return StepByStepResult(
+            bpm=corrected_bpm,  # Use corrected BPM
+            bpm_confidence=beat_result.bpm_confidence,
+            beats=corrected_beats,  # Use interpolated beats
+            downbeats=corrected_downbeats,  # Use corrected downbeats
+            time_signature=beat_result.time_signature,
+            duration=duration,
+            steps=steps,
+            detected_genre=detected_genre,
+            genre_confidence=genre_confidence,
+        )
+
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+@app.post('/apply-verified-hits')
+async def apply_verified_hits(
+    hits: str = Form(...),  # JSON string of verified hits
+    bpm: float = Form(...),
+    time_signature: int = Form(4),
+):
+    """
+    Apply user-verified hits after step-by-step review.
+    Converts verified hits to final format.
+    """
+    try:
+        verified_hits = json.loads(hits)
+
+        # Format hits for grid
+        formatted_hits = []
+        for hit in verified_hits:
+            formatted_hits.append(DrumHit(
+                time=hit['time'],
+                type=hit['type'],
+                confidence=hit.get('confidence', 1.0),
+                features=None
+            ))
+
+        # Detect swing from verified hits
+        beat_duration = 60.0 / bpm
+        beats = [i * beat_duration for i in range(int(len(formatted_hits) / 4) + 1)]
+        swing = detect_swing(formatted_hits, beats, time_signature)
+
+        detected_genre, genre_confidence = detect_genre(bpm, formatted_hits, swing)
+
+        return {
+            'status': 'success',
+            'hits': [h.model_dump() for h in formatted_hits],
+            'hit_count': len(formatted_hits),
+            'swing': swing,
+            'detected_genre': detected_genre,
+            'genre_confidence': genre_confidence,
+        }
+
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f'Invalid JSON: {e}')
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Error applying hits: {e}')
 
 
 # =============================================================================
@@ -3373,12 +3874,12 @@ async def predict_quiet_hits(
     downbeat_offset: float = Form(0.0),
     audio_duration: float = Form(...),
     time_signature: int = Form(4),
-    start_bar: Optional[int] = Form(None),
-    energy_multiplier: float = Form(0.5)
+    start_bar: Optional[int] = Form(1),  # Factory default: start from bar 1
+    energy_multiplier: float = Form(0.3)  # Factory default: high sensitivity
 ):
     """
     Pattern-based prediction for finding quiet percussion hits.
-    Uses FREQUENCY-FILTERED detection for each drum type:
+    Uses HPSS preprocessing + FREQUENCY-FILTERED detection for each drum type:
     - Kick: Low-pass 20-250Hz
     - Snare: Band-pass 150-2000Hz
     - Hi-hat: High-pass 5000-15000Hz
@@ -3395,18 +3896,28 @@ async def predict_quiet_hits(
     logger.info(f'Existing hits: {len(hits_list)}')
     logger.info(f'Start bar: {start_bar}, Energy multiplier: {energy_multiplier}')
 
-    # Save uploaded file
-    temp_path = f'/tmp/quiet_predict_{file.filename}'
+    # Use proper temp file handling for automatic cleanup
+    temp_file = None
+    temp_path = None
     try:
-        with open(temp_path, 'wb') as f:
-            content = await file.read()
-            f.write(content)
+        # Create temp file with proper suffix
+        suffix = Path(file.filename).suffix if file.filename else '.wav'
+        temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False, dir=str(TEMP_DIR))
+        temp_path = temp_file.name
+        content = await file.read()
+        temp_file.write(content)
+        temp_file.close()
 
         # Load audio
         y, sr = librosa.load(temp_path, sr=44100, mono=True)
 
+        # Apply HPSS to isolate percussive content first
+        logger.info('Applying HPSS preprocessing for quiet hit detection...')
+        y_perc = apply_hpss_preprocessing(y, sr)
+
         # =====================================================
         # Create frequency-filtered versions for each drum type
+        # Using HPSS percussive output for cleaner detection
         # =====================================================
         def bandpass_filter(data, lowcut, highcut, fs, order=4):
             """Safe bandpass filter"""
@@ -3436,8 +3947,9 @@ async def predict_quiet_hits(
 
         filtered_audio = {}
         for drum_type, (low, high) in DRUM_FILTERS.items():
-            filtered_audio[drum_type] = bandpass_filter(y, low, min(high, sr/2 - 100), sr)
-            logger.info(f'  Created {drum_type} filter: {low}-{high}Hz')
+            # Use HPSS percussive output for cleaner detection
+            filtered_audio[drum_type] = bandpass_filter(y_perc, low, min(high, sr/2 - 100), sr)
+            logger.info(f'  Created {drum_type} filter: {low}-{high}Hz (HPSS enhanced)')
 
         # Calculate timing
         beat_duration = 60.0 / bpm
@@ -3673,8 +4185,14 @@ async def predict_quiet_hits(
             'error': str(e)
         }
     finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        # Clean up temp file
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+        # Explicit garbage collection after processing large audio
+        gc.collect()
 
 
 # =============================================================================
@@ -3687,7 +4205,7 @@ async def detect_instruments(
     instrument_types: str = Form('vocals'),  # Comma-separated: vocals,bass,piano,guitar,synth
     start_time: float = Form(0.0),
     end_time: Optional[float] = Form(None),
-    energy_multiplier: float = Form(0.5),
+    energy_multiplier: float = Form(0.3),  # Factory default: high sensitivity
     detect_stereo: bool = Form(True),  # Detect panned elements (ad-libs)
     # === ADVANCED PROCESSING OPTIONS ===
     use_dynamic_eq: bool = Form(True),        # Apply EQ shaping per instrument
@@ -3765,12 +4283,17 @@ async def detect_instruments(
 
     logger.info(f'Filter bands to scan: {filter_bands}')
 
-    # Save uploaded file
-    temp_path = f'/tmp/instrument_detect_{file.filename}'
+    # Use proper temp file handling for automatic cleanup
+    temp_file = None
+    temp_path = None
     try:
-        with open(temp_path, 'wb') as f:
-            content = await file.read()
-            f.write(content)
+        # Create temp file with proper suffix
+        suffix = Path(file.filename).suffix if file.filename else '.wav'
+        temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False, dir=str(TEMP_DIR))
+        temp_path = temp_file.name
+        content = await file.read()
+        temp_file.write(content)
+        temp_file.close()
 
         # Load audio - STEREO for panning detection
         if detect_stereo:
@@ -3794,6 +4317,27 @@ async def detect_instruments(
             end_time = duration
 
         logger.info(f'Audio loaded: {duration:.2f}s, scanning {start_time:.2f}s to {end_time:.2f}s')
+
+        # Apply HPSS preprocessing
+        # Harmonic component for melodic instruments (vocals, piano, synth, strings, bass)
+        # Percussive component for drums and transients
+        logger.info('Applying HPSS preprocessing for cleaner instrument detection...')
+        D_mono = librosa.stft(y_mono)
+        H_mono, P_mono = librosa.decompose.hpss(D_mono, margin=2.0)
+        y_harmonic = librosa.istft(H_mono, length=len(y_mono))
+        y_percussive = librosa.istft(P_mono, length=len(y_mono))
+
+        # Normalize
+        if np.max(np.abs(y_harmonic)) > 0:
+            y_harmonic = y_harmonic / np.max(np.abs(y_harmonic))
+        if np.max(np.abs(y_percussive)) > 0:
+            y_percussive = y_percussive / np.max(np.abs(y_percussive))
+
+        logger.info(f'HPSS complete: harmonic RMS={np.sqrt(np.mean(y_harmonic**2)):.4f}, percussive RMS={np.sqrt(np.mean(y_percussive**2)):.4f}')
+
+        # Define which instruments use harmonic vs percussive
+        PERCUSSIVE_INSTRUMENTS = {'kick', 'snare', 'hihat', 'clap', 'tom', 'perc',
+                                   'impact', 'stutter', 'reverse_crash'}
 
         # Bandpass filter function
         def bandpass_filter(data, lowcut, highcut, fs, order=4):
@@ -3823,8 +4367,18 @@ async def detect_instruments(
                 continue
             low, high = INSTRUMENT_FILTERS[band_name]
 
-            # Step 1: Bandpass filter
-            y_band = bandpass_filter(y_mono, low, min(high, sr/2 - 100), sr)
+            # Step 1: Select HPSS component based on instrument type
+            # Percussive: drums, impacts, transients
+            # Harmonic: vocals, bass, piano, synth, strings
+            if band_name in PERCUSSIVE_INSTRUMENTS:
+                y_source = y_percussive
+                logger.debug(f'{band_name}: using percussive component')
+            else:
+                y_source = y_harmonic
+                logger.debug(f'{band_name}: using harmonic component')
+
+            # Step 2: Bandpass filter on HPSS component
+            y_band = bandpass_filter(y_source, low, min(high, sr/2 - 100), sr)
 
             # Step 2: De-reverb/De-delay (before other processing for cleaner signal)
             if use_dereverb and band_name in DEREVERB_PRESETS:
@@ -4023,8 +4577,14 @@ async def detect_instruments(
         traceback.print_exc()
         return {'success': False, 'error': str(e)}
     finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        # Clean up temp file
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+        # Explicit garbage collection after processing large audio
+        gc.collect()
 
 
 @app.get('/instrument-filters')
@@ -4341,6 +4901,418 @@ async def validate_single_instrument(instrument: str):
             'instrument': instrument,
             'error': str(e)
         }
+
+
+# =============================================================================
+# Reverb/Delay Analysis
+# =============================================================================
+
+@app.post('/analyze-reverb-delay')
+async def analyze_reverb_delay(
+    file: UploadFile = File(...),
+    start_time: float = Form(0.0),
+    end_time: Optional[float] = Form(None),
+    analyze_sections: bool = Form(True),  # Analyze multiple sections
+    section_length: float = Form(4.0),    # Seconds per section
+):
+    """
+    Analyze audio to estimate reverb and delay characteristics.
+
+    Uses stereo analysis and timing patterns to estimate:
+    - RT60 (reverb time) - time for reverb to decay by 60dB
+    - Pre-delay - time before reverb starts
+    - Stereo width - how wide the reverb field is
+    - Delay time - discrete delay echo timing
+    - Delay feedback - estimated feedback amount
+
+    This helps match reverb/delay settings to reference tracks.
+    """
+    logger.info('=== Reverb/Delay Analysis ===')
+
+    # Use proper temp file handling for automatic cleanup
+    temp_file = None
+    temp_path = None
+    try:
+        # Create temp file with proper suffix
+        suffix = Path(file.filename).suffix if file.filename else '.wav'
+        temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False, dir=str(TEMP_DIR))
+        temp_path = temp_file.name
+        content = await file.read()
+        temp_file.write(content)
+        temp_file.close()
+
+        # Load stereo audio
+        y_stereo, sr = librosa.load(temp_path, sr=44100, mono=False)
+
+        if y_stereo.ndim == 1:
+            # Mono file
+            y_left = y_stereo
+            y_right = y_stereo
+            y_mono = y_stereo
+            is_stereo = False
+        else:
+            y_left = y_stereo[0]
+            y_right = y_stereo[1]
+            y_mono = librosa.to_mono(y_stereo)
+            is_stereo = True
+
+        duration = len(y_mono) / sr
+        if end_time is None or end_time > duration:
+            end_time = duration
+
+        # Trim to analysis range
+        start_sample = int(start_time * sr)
+        end_sample = int(end_time * sr)
+        y_mono = y_mono[start_sample:end_sample]
+        y_left = y_left[start_sample:end_sample]
+        y_right = y_right[start_sample:end_sample]
+
+        logger.info(f'Analyzing {end_time - start_time:.2f}s of audio (stereo: {is_stereo})')
+
+        results = {
+            'success': True,
+            'duration': end_time - start_time,
+            'is_stereo': is_stereo,
+            'global': {},
+            'sections': [],
+        }
+
+        # === 1. STEREO WIDTH ANALYSIS ===
+        def analyze_stereo_width(left, right):
+            """Calculate stereo correlation and width."""
+            if len(left) == 0:
+                return {'correlation': 1.0, 'width': 0.0, 'l_r_balance': 0.0}
+
+            # Cross-correlation at zero lag
+            l_norm = left - np.mean(left)
+            r_norm = right - np.mean(right)
+            l_std = np.std(l_norm)
+            r_std = np.std(r_norm)
+
+            if l_std > 0 and r_std > 0:
+                correlation = np.mean(l_norm * r_norm) / (l_std * r_std)
+            else:
+                correlation = 1.0
+
+            # Width: 0 = mono, 1 = full stereo
+            # Correlation of 1 = mono, 0 = uncorrelated (wide)
+            width = 1.0 - abs(correlation)
+
+            # L/R balance (-1 = all left, +1 = all right)
+            l_energy = np.sum(left ** 2)
+            r_energy = np.sum(right ** 2)
+            total = l_energy + r_energy
+            if total > 0:
+                balance = (r_energy - l_energy) / total
+            else:
+                balance = 0.0
+
+            return {
+                'correlation': float(correlation),
+                'width': float(np.clip(width, 0, 1)),
+                'l_r_balance': float(balance),
+            }
+
+        # === 2. RT60 ESTIMATION (Reverb Time) ===
+        def estimate_rt60(audio, sr):
+            """
+            Estimate RT60 from energy decay curve.
+            Uses Schroeder integration (backwards integration of squared signal).
+            """
+            # Square the signal
+            energy = audio ** 2
+
+            # Schroeder integration (cumulative sum from end)
+            schroeder = np.cumsum(energy[::-1])[::-1]
+
+            # Normalize
+            if schroeder[0] > 0:
+                schroeder_db = 10 * np.log10(schroeder / schroeder[0] + 1e-10)
+            else:
+                return None
+
+            # Find time to decay by 60dB (or extrapolate from 20dB decay)
+            # T20 extrapolation: find -20dB point, multiply time by 3
+            decay_20db_idx = np.where(schroeder_db <= -20)[0]
+            if len(decay_20db_idx) > 0:
+                t20 = decay_20db_idx[0] / sr
+                rt60 = t20 * 3  # Extrapolate to 60dB
+                return float(np.clip(rt60, 0.1, 10.0))  # Clamp to reasonable range
+
+            # If can't find -20dB, try -10dB and extrapolate
+            decay_10db_idx = np.where(schroeder_db <= -10)[0]
+            if len(decay_10db_idx) > 0:
+                t10 = decay_10db_idx[0] / sr
+                rt60 = t10 * 6  # Extrapolate to 60dB
+                return float(np.clip(rt60, 0.1, 10.0))
+
+            return None
+
+        # === 3. DELAY ECHO DETECTION ===
+        def detect_delay_echoes(audio, sr, max_delay_ms=500):
+            """
+            Detect discrete delay echoes using autocorrelation.
+            Looks for peaks in the autocorrelation at musically relevant intervals.
+            """
+            # Compute autocorrelation
+            max_lag = int(max_delay_ms * sr / 1000)
+
+            # Use short segment for speed
+            segment = audio[:min(len(audio), sr * 4)]  # First 4 seconds
+
+            # Normalize
+            if np.std(segment) > 0:
+                segment_norm = (segment - np.mean(segment)) / np.std(segment)
+            else:
+                return None
+
+            # Autocorrelation using FFT
+            n = len(segment_norm)
+            fft = np.fft.fft(segment_norm, n=2*n)
+            autocorr = np.fft.ifft(fft * np.conj(fft))[:n].real
+            autocorr = autocorr / autocorr[0]  # Normalize
+
+            # Find peaks (excluding the main peak at lag 0)
+            min_lag = int(50 * sr / 1000)  # At least 50ms delay
+            search_region = autocorr[min_lag:max_lag]
+
+            if len(search_region) == 0:
+                return None
+
+            # Find significant peaks
+            from scipy.signal import find_peaks
+            peaks, properties = find_peaks(search_region, height=0.1, distance=int(20 * sr / 1000))
+
+            delay_echoes = []
+            for peak_idx in peaks[:3]:  # Top 3 peaks
+                delay_ms = (peak_idx + min_lag) * 1000 / sr
+                strength = float(search_region[peak_idx])
+                delay_echoes.append({
+                    'delay_ms': float(delay_ms),
+                    'strength': strength,
+                })
+
+            if delay_echoes:
+                # Sort by strength
+                delay_echoes.sort(key=lambda x: x['strength'], reverse=True)
+                return {
+                    'detected': True,
+                    'primary_delay_ms': delay_echoes[0]['delay_ms'],
+                    'primary_strength': delay_echoes[0]['strength'],
+                    'echoes': delay_echoes,
+                    'estimated_feedback': delay_echoes[0]['strength'] * 0.7,  # Rough estimate
+                }
+
+            return {'detected': False}
+
+        # === 4. PRE-DELAY ESTIMATION ===
+        def estimate_predelay(audio, sr):
+            """
+            Estimate pre-delay by analyzing onset characteristics.
+            Looks at the gap between transient and sustained sound.
+            """
+            # Get onset envelope
+            onset_env = librosa.onset.onset_strength(y=audio, sr=sr)
+
+            # Find first significant onset
+            threshold = np.max(onset_env) * 0.3
+            onset_frames = np.where(onset_env > threshold)[0]
+
+            if len(onset_frames) == 0:
+                return None
+
+            # Convert to samples
+            hop_length = 512  # librosa default
+            first_onset_sample = onset_frames[0] * hop_length
+
+            # Look at the signal around the onset
+            pre_onset = max(0, first_onset_sample - int(0.05 * sr))
+            post_onset = min(len(audio), first_onset_sample + int(0.1 * sr))
+
+            segment = audio[pre_onset:post_onset]
+
+            # Find the actual peak
+            peak_idx = np.argmax(np.abs(segment))
+
+            # Energy before and after peak (to estimate reverb build-up)
+            if peak_idx > 10:
+                pre_energy = np.mean(segment[:peak_idx] ** 2)
+                post_energy = np.mean(segment[peak_idx:] ** 2)
+
+                # If pre-energy is significant compared to post, there's pre-delay
+                if post_energy > 0:
+                    ratio = pre_energy / post_energy
+                    # Rough pre-delay estimate (more ratio = less pre-delay)
+                    predelay_ms = (1.0 - min(ratio, 1.0)) * 50  # 0-50ms range
+                    return float(predelay_ms)
+
+            return 10.0  # Default estimate
+
+        # === 5. ANALYZE FULL TRACK ===
+        global_stereo = analyze_stereo_width(y_left, y_right)
+        global_rt60 = estimate_rt60(y_mono, sr)
+        global_delay = detect_delay_echoes(y_mono, sr)
+        global_predelay = estimate_predelay(y_mono, sr)
+
+        results['global'] = {
+            'stereo': global_stereo,
+            'rt60_seconds': global_rt60,
+            'rt60_description': describe_rt60(global_rt60) if global_rt60 else 'Could not estimate',
+            'delay': global_delay,
+            'predelay_ms': global_predelay,
+            'reverb_character': classify_reverb(global_rt60, global_stereo['width'], global_predelay),
+        }
+
+        # === 6. ANALYZE SECTIONS (if requested) ===
+        if analyze_sections:
+            section_samples = int(section_length * sr)
+            num_sections = int(len(y_mono) / section_samples)
+
+            for i in range(min(num_sections, 8)):  # Max 8 sections
+                start = i * section_samples
+                end = start + section_samples
+
+                section_mono = y_mono[start:end]
+                section_left = y_left[start:end]
+                section_right = y_right[start:end]
+
+                section_stereo = analyze_stereo_width(section_left, section_right)
+                section_rt60 = estimate_rt60(section_mono, sr)
+                section_delay = detect_delay_echoes(section_mono, sr)
+
+                results['sections'].append({
+                    'start_time': float(start_time + i * section_length),
+                    'end_time': float(start_time + (i + 1) * section_length),
+                    'stereo': section_stereo,
+                    'rt60_seconds': section_rt60,
+                    'delay': section_delay,
+                })
+
+        # === 7. GENERATE RECOMMENDATIONS ===
+        results['recommendations'] = generate_reverb_recommendations(results['global'])
+
+        logger.info(f'Analysis complete: RT60={global_rt60}s, Width={global_stereo["width"]:.2f}')
+        return results
+
+    except Exception as e:
+        logger.error(f'Error in reverb/delay analysis: {e}', exc_info=True)
+        return {'success': False, 'error': str(e)}
+    finally:
+        # Clean up temp file
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+        # Explicit garbage collection after processing large audio
+        gc.collect()
+
+
+def describe_rt60(rt60: float) -> str:
+    """Describe RT60 value in human terms."""
+    if rt60 is None:
+        return 'Unknown'
+    elif rt60 < 0.3:
+        return 'Very dry (small room/booth)'
+    elif rt60 < 0.6:
+        return 'Dry (treated room/plate)'
+    elif rt60 < 1.0:
+        return 'Medium (studio room)'
+    elif rt60 < 1.5:
+        return 'Ambient (live room)'
+    elif rt60 < 2.5:
+        return 'Long (hall/chamber)'
+    else:
+        return 'Very long (cathedral/cave)'
+
+
+def classify_reverb(rt60: float, width: float, predelay: float) -> str:
+    """Classify reverb character based on parameters."""
+    if rt60 is None:
+        return 'Unknown'
+
+    # Classify type
+    if rt60 < 0.4:
+        if width < 0.3:
+            return 'Tight mono room'
+        else:
+            return 'Wide plate/short'
+    elif rt60 < 0.8:
+        if width < 0.3:
+            return 'Small room'
+        elif width < 0.6:
+            return 'Medium room/plate'
+        else:
+            return 'Wide ambient'
+    elif rt60 < 1.5:
+        if width < 0.4:
+            return 'Live room'
+        else:
+            return 'Hall/chamber'
+    else:
+        if width > 0.5:
+            return 'Large hall/cathedral'
+        else:
+            return 'Long decay/cave'
+
+
+def generate_reverb_recommendations(analysis: dict) -> dict:
+    """Generate reverb plugin settings based on analysis."""
+    rt60 = analysis.get('rt60_seconds', 1.0) or 1.0
+    stereo = analysis.get('stereo', {})
+    width = stereo.get('width', 0.5)
+    predelay = analysis.get('predelay_ms', 10) or 10
+    delay_info = analysis.get('delay', {})
+
+    recommendations = {
+        'reverb': {
+            'decay_time': f'{rt60:.2f}s',
+            'predelay': f'{predelay:.0f}ms',
+            'width': f'{width * 100:.0f}%',
+            'diffusion': 'High' if rt60 > 1.0 else 'Medium',
+            'early_reflections': 'Strong' if predelay < 15 else 'Normal',
+            'suggested_plugins': [],
+        },
+        'delay': None,
+    }
+
+    # Suggest plugins based on character
+    if rt60 < 0.5:
+        recommendations['reverb']['suggested_plugins'] = [
+            'Valhalla Room (Small preset)',
+            'FabFilter Pro-R (Tight)',
+            'Waves H-Reverb (Plate)',
+        ]
+    elif rt60 < 1.0:
+        recommendations['reverb']['suggested_plugins'] = [
+            'Valhalla Room (Medium preset)',
+            'FabFilter Pro-R (Room)',
+            'Soundtoys Little Plate',
+        ]
+    else:
+        recommendations['reverb']['suggested_plugins'] = [
+            'Valhalla Vintage Verb (Hall)',
+            'FabFilter Pro-R (Large)',
+            'Waves Abbey Road Chambers',
+        ]
+
+    # Add delay recommendations if echoes detected
+    if delay_info and delay_info.get('detected'):
+        primary_delay = delay_info.get('primary_delay_ms', 0)
+        feedback = delay_info.get('estimated_feedback', 0.3)
+
+        recommendations['delay'] = {
+            'delay_time': f'{primary_delay:.0f}ms',
+            'feedback': f'{feedback * 100:.0f}%',
+            'mix': '20-30%',
+            'suggested_plugins': [
+                'Valhalla Delay',
+                'Soundtoys EchoBoy',
+                'FabFilter Timeless',
+            ],
+        }
+
+    return recommendations
 
 
 # =============================================================================

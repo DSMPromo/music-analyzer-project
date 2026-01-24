@@ -34,6 +34,36 @@
 - **Git**: Conventional commits (feat:, fix:, docs:, etc.)
 - **Dependencies**: Keep minimal, prefer well-maintained packages
 
+---
+
+## File Size Guidelines
+
+Keep files small for maintainability and AI tool compatibility.
+
+| File Type | Target | Max | Action if exceeded |
+|-----------|--------|-----|-------------------|
+| Components | 200 lines | 500 lines | Split into sub-components |
+| Hooks | 150 lines | 300 lines | Extract utilities |
+| Utils | 200 lines | 400 lines | Split by function group |
+| Python | 500 lines | 1000 lines | Split into modules |
+| CSS | 500 lines | 1000 lines | Split by component |
+| Docs | 300 lines | 500 lines | Split by topic |
+
+### When to Split
+
+- **Components**: Extract child components, move logic to hooks
+- **Hooks**: Move helpers to utils, create specialized hooks
+- **Python backends**: Create modules (e.g., `drum_classifier.py`, `beat_detection.py`)
+- **CSS**: Use component-specific CSS files or CSS modules
+
+### Token Limits (Claude Code)
+
+- **Max readable**: 25,000 tokens (~1,500 lines)
+- **Ideal**: 15,000 tokens (~500 lines)
+- Files over 1,000 lines should be split proactively
+
+---
+
 ## Large File Handling
 When reading files that exceed 25000 tokens (e.g., App.css), use these strategies:
 

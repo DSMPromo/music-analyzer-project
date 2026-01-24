@@ -136,7 +136,10 @@ function DevModeGuidance({
       // Check hit distribution
       const kickCount = drumHits?.kick?.length || 0;
       const snareCount = drumHits?.snare?.length || 0;
+      const clapCount = drumHits?.clap?.length || 0;
       const hihatCount = drumHits?.hihat?.length || 0;
+      // Snare + Clap combined (both are backbeat elements)
+      const backbeatCount = snareCount + clapCount;
 
       if (barsInTrack > 4) {
         // Missing kicks
@@ -150,14 +153,14 @@ function DevModeGuidance({
           });
         }
 
-        // Missing snares
-        if (snareCount < barsInTrack * 0.3) {
+        // Missing backbeat (snares + claps combined)
+        if (backbeatCount < barsInTrack * 0.3) {
           warnings.push({
             type: 'hits',
             severity: 'low',
-            title: 'Few Snares Detected',
-            message: `Only ${snareCount} snares in ${barsInTrack} bars`,
-            suggestion: 'Snares might be claps or rim shots - check classification',
+            title: 'Few Snares/Claps Detected',
+            message: `Only ${backbeatCount} backbeat hits (${snareCount} snares + ${clapCount} claps) in ${barsInTrack} bars`,
+            suggestion: 'Try verification mode to adjust snare/clap sensitivity',
           });
         }
       }
@@ -167,7 +170,7 @@ function DevModeGuidance({
         info.push({
           type: 'hits',
           title: 'Hits Detected',
-          message: `${hitCount} total hits (K:${kickCount} S:${snareCount} HH:${hihatCount})`,
+          message: `${hitCount} total (K:${kickCount} S:${snareCount} C:${clapCount} HH:${hihatCount})`,
           status: 'good',
         });
       }

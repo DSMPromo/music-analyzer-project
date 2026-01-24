@@ -311,7 +311,12 @@
           "timestamp": "2026-01-24T10:00:00.000Z"
         }
       ],
-      "relatedIncidents": ["TICKET-012", "TICKET-013", "TICKET-014", "TICKET-015"]
+      "relatedIncidents": [
+        "TICKET-012",
+        "TICKET-013",
+        "TICKET-014",
+        "TICKET-015"
+      ]
     },
     {
       "id": "TICKET-017",
@@ -334,7 +339,10 @@
           "timestamp": "2026-01-24T10:30:00.000Z"
         }
       ],
-      "relatedIncidents": ["TICKET-014", "TICKET-016"]
+      "relatedIncidents": [
+        "TICKET-014",
+        "TICKET-016"
+      ]
     },
     {
       "id": "TICKET-018",
@@ -357,7 +365,9 @@
           "timestamp": "2026-01-24T10:15:00.000Z"
         }
       ],
-      "relatedIncidents": ["TICKET-017"]
+      "relatedIncidents": [
+        "TICKET-017"
+      ]
     },
     {
       "id": "TICKET-019",
@@ -380,7 +390,10 @@
           "timestamp": "2026-01-24T10:15:00.000Z"
         }
       ],
-      "relatedIncidents": ["TICKET-017", "TICKET-018"]
+      "relatedIncidents": [
+        "TICKET-017",
+        "TICKET-018"
+      ]
     },
     {
       "id": "TICKET-020",
@@ -407,7 +420,9 @@
           "timestamp": "2026-01-24T11:30:00.000Z"
         }
       ],
-      "relatedIncidents": ["TICKET-018"]
+      "relatedIncidents": [
+        "TICKET-018"
+      ]
     },
     {
       "id": "TICKET-021",
@@ -507,7 +522,9 @@
           "timestamp": "2026-01-24T14:30:00.000Z"
         }
       ],
-      "relatedIncidents": ["TICKET-013"]
+      "relatedIncidents": [
+        "TICKET-013"
+      ]
     },
     {
       "id": "TICKET-025",
@@ -530,7 +547,9 @@
           "timestamp": "2026-01-24T15:00:00.000Z"
         }
       ],
-      "relatedIncidents": ["TICKET-024"]
+      "relatedIncidents": [
+        "TICKET-024"
+      ]
     },
     {
       "id": "TICKET-026",
@@ -553,7 +572,10 @@
           "timestamp": "2026-01-24T15:30:00.000Z"
         }
       ],
-      "relatedIncidents": ["TICKET-024", "TICKET-025"]
+      "relatedIncidents": [
+        "TICKET-024",
+        "TICKET-025"
+      ]
     },
     {
       "id": "TICKET-027",
@@ -576,7 +598,9 @@
           "timestamp": "2026-01-24T16:00:00.000Z"
         }
       ],
-      "relatedIncidents": ["TICKET-026"]
+      "relatedIncidents": [
+        "TICKET-026"
+      ]
     },
     {
       "id": "TICKET-028",
@@ -584,21 +608,24 @@
       "description": "BPM detection returns 86.1 (half-time) when actual BPM is 171. The half-time correction code exists but only triggers when user provides BPM. Need auto-correction based on confidence and genre characteristics.",
       "priority": "High",
       "component": "Rhythm Detection",
-      "status": "OPEN",
+      "status": "RESOLVED",
       "created": "2026-01-24",
       "updated": "2026-01-24",
       "steps": "1. Load synth-pop/electronic track at ~171 BPM\n2. Run rhythm analysis without providing known BPM\n3. Observe BPM shows 86.1 (exactly half)",
       "expected": "BPM should auto-correct to ~171 based on half-time detection heuristics",
       "actual": "BPM shows 86.1 with 40% confidence, 50% error",
-      "rootCause": "The correct_half_time_beats() function only triggers when user provides expected_bpm parameter. Without user input, it doesn't know to double the detected BPM. Low confidence (40%) is a signal that librosa is uncertain, but this isn't used to trigger half-time correction.",
-      "resolution": null,
+      "rootCause": "librosa detects half-time for synth-pop tracks. Low confidence (40%) is a signal but was not being used to trigger correction.",
+      "resolution": "Added heuristic: BPM < 95 AND confidence < 50% triggers auto-double. Also improved snare detection with adaptive percentile threshold and combined mid+high energy. Clap detection now uses high/mid ratio to distinguish from snares.",
       "notes": [
         {
           "text": "Detection metrics:\n- Detected BPM: 86.1\n- Actual BPM: 171\n- Confidence: 40%\n- Error: 50% (half-time)\n\nSuggested fixes:\n1. Auto-trigger half-time correction when: BPM < 95 AND confidence < 50%\n2. Analyze beat interval consistency - half-time detection shows alternating strong/weak beats\n3. Check for 'double-time feel' in hi-hat/snare patterns\n4. Use spectral flux to detect if energy peaks suggest faster tempo",
           "timestamp": "2026-01-24T17:00:00.000Z"
         }
       ],
-      "relatedIncidents": ["TICKET-012"]
+      "relatedIncidents": [
+        "TICKET-012"
+      ],
+      "resolved": "2026-01-24"
     },
     {
       "id": "TICKET-029",

@@ -147,7 +147,8 @@ export function useAdvancedChordDetection(options = {}) {
   }, [isEnabled]);
 
   // Process frame from full mix (no stems)
-  const processFullMix = useCallback((analyser) => {
+  // playbackTimeMs is the current audio playback position in ms
+  const processFullMix = useCallback((analyser, playbackTimeMs = null) => {
     if (!detectorRef.current || !isEnabled || !analyser) return null;
 
     // Update sample rate from audio context if available
@@ -198,7 +199,7 @@ export function useAdvancedChordDetection(options = {}) {
       binCount: analyser.frequencyBinCount
     });
 
-    // Add to history
+    // Add to history using playback time (not wall clock time)
     if (result.chord && result.stable) {
       setChordHistory(prev => {
         const last = prev[prev.length - 1];
@@ -208,7 +209,8 @@ export function useAdvancedChordDetection(options = {}) {
           return [...prev, {
             chord: result.chord,
             confidence: result.confidence,
-            timestamp: Date.now()
+            // Use playback time for grid sync, fallback to 0 if not provided
+            timestamp: playbackTimeMs !== null ? playbackTimeMs : (prev.length > 0 ? prev[prev.length - 1].timestamp + 500 : 0)
           }].slice(-100);
         }
         return prev;

@@ -301,14 +301,15 @@ function ChordDetector({
 
   // Advanced mode: process with multi-instrument fusion
   useEffect(() => {
-    if (!advancedMode || !analyser || !isPlaying) return;
+    if ((!advancedMode && !autoDetect) || !analyser || !isPlaying) return;
 
     const interval = setInterval(() => {
-      processFullMix(analyser);
+      // Pass currentTimeMs for proper grid sync (playback time, not wall clock)
+      processFullMix(analyser, currentTimeMs);
     }, 50); // 20 fps
 
     return () => clearInterval(interval);
-  }, [advancedMode, analyser, isPlaying, processFullMix]);
+  }, [advancedMode, autoDetect, analyser, isPlaying, processFullMix, currentTimeMs]);
 
   const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 

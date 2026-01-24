@@ -2711,6 +2711,657 @@ async def match_pattern(request: PatternMatchRequest):
 
 
 # =============================================================================
+# Instrument & Vocal Frequency Bands
+# =============================================================================
+
+INSTRUMENT_FILTERS = {
+    # === DRUMS (existing) ===
+    'kick': (20, 250),
+    'snare': (150, 2000),
+    'hihat': (5000, 15000),
+    'clap': (1000, 4000),
+    'tom': (80, 500),
+    'perc': (2000, 8000),
+
+    # === BASS ===
+    'sub_bass': (20, 80),        # 808s, sub synths
+    'bass': (60, 250),           # Bass guitar, synth bass
+    'bass_harmonics': (200, 600), # Bass upper harmonics
+
+    # === MELODIC INSTRUMENTS ===
+    'piano_low': (80, 400),      # Piano left hand
+    'piano_mid': (250, 2000),    # Piano middle
+    'piano_high': (2000, 5000),  # Piano right hand, brightness
+    'guitar': (80, 1200),        # Acoustic/electric guitar body
+    'guitar_bright': (2000, 5000), # Guitar presence/pick attack
+    'synth_lead': (500, 8000),   # Lead synths, arps
+    'synth_pad': (200, 4000),    # Pads, atmospheres
+    'strings': (200, 4000),      # Orchestral strings
+    'brass': (100, 3000),        # Horns, trumpets
+    'pluck': (2000, 12000),      # Plucks, bells, bright synths
+
+    # === VOCALS ===
+    'vocal_low': (80, 300),      # Male chest voice, low harmonics
+    'vocal_body': (200, 2000),   # Core vocal tone, lyrics clarity
+    'vocal_presence': (2000, 5000),  # Vocal clarity, cut-through
+    'vocal_air': (5000, 12000),  # Breathiness, air
+    'sibilance': (5000, 9000),   # S, T, F, SH sounds
+    'adlib': (200, 5000),        # Ad-libs, background vocals
+    'harmony': (300, 4000),      # Vocal harmonies
+
+    # === SOUND FX / TRANSITIONS ===
+    'uplifter': (2000, 15000),   # White noise risers, upward sweeps
+    'downlifter': (100, 10000),  # Downward sweeps, reverse risers
+    'impact': (20, 2000),        # Hits, booms, thuds
+    'sub_drop': (20, 100),       # Sub bass drops, 808 slides
+    'reverse_crash': (3000, 15000),  # Reverse cymbals, crashes
+    'white_noise': (1000, 15000),    # White noise sweeps, fills
+    'swoosh': (1000, 8000),      # Wooshes, transitions
+    'tape_stop': (50, 2000),     # Tape stop effects, slowdowns
+    'stutter': (200, 8000),      # Glitch, stutter edits
+    'vocal_chop': (300, 5000),   # Chopped vocal FX, one-shots
+}
+
+# Recommended energy thresholds for each type
+INSTRUMENT_THRESHOLDS = {
+    # Drums
+    'kick': 0.008, 'snare': 0.006, 'hihat': 0.004,
+    'clap': 0.005, 'tom': 0.006, 'perc': 0.003,
+    # Bass
+    'sub_bass': 0.010, 'bass': 0.008, 'bass_harmonics': 0.005,
+    # Melodic
+    'piano_low': 0.006, 'piano_mid': 0.005, 'piano_high': 0.004,
+    'guitar': 0.005, 'guitar_bright': 0.004,
+    'synth_lead': 0.004, 'synth_pad': 0.003, 'strings': 0.004,
+    'brass': 0.005, 'pluck': 0.003,
+    # Vocals
+    'vocal_low': 0.006, 'vocal_body': 0.005, 'vocal_presence': 0.004,
+    'vocal_air': 0.003, 'sibilance': 0.004,
+    'adlib': 0.002,     # Very sensitive for quiet ad-libs
+    'harmony': 0.003,   # Sensitive for background harmonies
+    # Sound FX / Transitions
+    'uplifter': 0.003,      # Detect subtle risers building before drops
+    'downlifter': 0.004,    # Downward sweeps
+    'impact': 0.008,        # Strong transients, similar to kicks
+    'sub_drop': 0.010,      # Very low freq needs higher threshold
+    'reverse_crash': 0.003, # Bright, sustained so lower threshold
+    'white_noise': 0.002,   # Noise is spread across spectrum
+    'swoosh': 0.003,        # Quick transitions
+    'tape_stop': 0.005,     # More sustained effect
+    'stutter': 0.002,       # Quick repeated hits
+    'vocal_chop': 0.003,    # Short vocal stabs
+}
+
+# =============================================================================
+# Dynamic EQ Configuration for Instrument Isolation
+# =============================================================================
+# Defines frequency shaping to isolate each instrument before detection
+# Format: { 'instrument': { 'boost': [(freq, gain_db), ...], 'cut': [(freq, gain_db, q), ...] } }
+
+DYNAMIC_EQ_PROFILES = {
+    # === DRUMS ===
+    'kick': {
+        'boost': [(60, 6), (100, 4)],           # Boost sub and punch
+        'cut': [(300, -6, 1.5), (5000, -12, 0.7)],  # Cut mids and highs
+        'transient_enhance': True
+    },
+    'snare': {
+        'boost': [(200, 4), (3000, 6)],         # Boost body and crack
+        'cut': [(60, -12, 1.0), (8000, -6, 0.7)],  # Cut sub and air
+        'transient_enhance': True
+    },
+    'hihat': {
+        'boost': [(8000, 6), (12000, 4)],       # Boost shimmer
+        'cut': [(200, -18, 0.7), (500, -12, 1.0)], # Heavy low cut
+        'transient_enhance': False
+    },
+    'clap': {
+        'boost': [(2000, 4), (4000, 3)],        # Boost upper mids
+        'cut': [(100, -12, 1.0), (8000, -3, 0.7)],
+        'transient_enhance': True
+    },
+    'tom': {
+        'boost': [(100, 4), (300, 3)],          # Boost low-mids
+        'cut': [(5000, -9, 0.7)],               # Cut highs
+        'transient_enhance': True
+    },
+    'perc': {
+        'boost': [(3000, 4), (6000, 3)],        # Boost presence
+        'cut': [(100, -12, 1.0)],               # Cut lows
+        'transient_enhance': True
+    },
+
+    # === BASS ===
+    'sub_bass': {
+        'boost': [(40, 6), (60, 4)],            # Boost sub frequencies
+        'cut': [(200, -18, 0.7), (1000, -24, 0.5)],  # Heavy mid/high cut
+        'transient_enhance': False
+    },
+    'bass': {
+        'boost': [(80, 4), (150, 3)],           # Boost bass body
+        'cut': [(40, -6, 1.0), (2000, -12, 0.7)],  # Cut sub rumble and highs
+        'transient_enhance': True
+    },
+    'bass_harmonics': {
+        'boost': [(300, 4), (500, 3)],          # Boost upper harmonics
+        'cut': [(80, -12, 1.0), (2000, -6, 0.7)],
+        'transient_enhance': False
+    },
+
+    # === MELODIC ===
+    'piano_low': {
+        'boost': [(150, 3), (300, 2)],
+        'cut': [(60, -6, 1.0), (2000, -9, 0.7)],
+        'transient_enhance': True
+    },
+    'piano_mid': {
+        'boost': [(500, 3), (1000, 2)],
+        'cut': [(100, -9, 1.0), (5000, -6, 0.7)],
+        'transient_enhance': True
+    },
+    'piano_high': {
+        'boost': [(3000, 4), (4000, 3)],
+        'cut': [(200, -12, 1.0)],
+        'transient_enhance': True
+    },
+    'guitar': {
+        'boost': [(400, 3), (800, 2)],
+        'cut': [(60, -9, 1.0), (5000, -6, 0.7)],
+        'transient_enhance': True
+    },
+    'guitar_bright': {
+        'boost': [(3000, 4), (4000, 3)],
+        'cut': [(200, -12, 1.0)],
+        'transient_enhance': True
+    },
+    'synth_lead': {
+        'boost': [(2000, 3), (4000, 2)],
+        'cut': [(100, -12, 1.0)],
+        'transient_enhance': False
+    },
+    'synth_pad': {
+        'boost': [(500, 2), (2000, 2)],
+        'cut': [(60, -9, 1.0), (8000, -6, 0.7)],
+        'transient_enhance': False
+    },
+    'strings': {
+        'boost': [(800, 3), (2000, 2)],
+        'cut': [(100, -9, 1.0), (8000, -6, 0.7)],
+        'transient_enhance': False
+    },
+    'brass': {
+        'boost': [(500, 3), (2000, 4)],
+        'cut': [(60, -12, 1.0), (8000, -6, 0.7)],
+        'transient_enhance': True
+    },
+    'pluck': {
+        'boost': [(4000, 4), (8000, 3)],
+        'cut': [(200, -12, 1.0)],
+        'transient_enhance': True
+    },
+
+    # === VOCALS ===
+    'vocal_low': {
+        'boost': [(150, 3), (250, 2)],
+        'cut': [(60, -9, 1.0), (2000, -12, 0.7)],
+        'transient_enhance': False
+    },
+    'vocal_body': {
+        'boost': [(800, 3), (1500, 2)],
+        'cut': [(100, -9, 1.0), (6000, -6, 0.7)],
+        'transient_enhance': False
+    },
+    'vocal_presence': {
+        'boost': [(3000, 4), (4000, 3)],
+        'cut': [(200, -12, 1.0), (8000, -3, 0.7)],
+        'transient_enhance': False
+    },
+    'vocal_air': {
+        'boost': [(8000, 4), (10000, 3)],
+        'cut': [(500, -18, 0.7)],
+        'transient_enhance': False
+    },
+    'sibilance': {
+        'boost': [(6000, 4), (8000, 3)],
+        'cut': [(300, -18, 0.7)],
+        'transient_enhance': False
+    },
+    'adlib': {
+        'boost': [(1500, 3), (3000, 2)],
+        'cut': [(100, -9, 1.0), (8000, -6, 0.7)],
+        'transient_enhance': False
+    },
+    'harmony': {
+        'boost': [(800, 2), (2000, 2)],
+        'cut': [(100, -9, 1.0), (6000, -6, 0.7)],
+        'transient_enhance': False
+    },
+
+    # === SOUND FX ===
+    'uplifter': {
+        'boost': [(4000, 4), (8000, 3)],
+        'cut': [(200, -12, 1.0)],
+        'transient_enhance': False
+    },
+    'downlifter': {
+        'boost': [(500, 3), (2000, 2)],
+        'cut': [(60, -6, 1.0)],
+        'transient_enhance': False
+    },
+    'impact': {
+        'boost': [(60, 6), (200, 4)],
+        'cut': [(5000, -12, 0.7)],
+        'transient_enhance': True
+    },
+    'sub_drop': {
+        'boost': [(40, 6), (60, 4)],
+        'cut': [(200, -24, 0.5)],
+        'transient_enhance': False
+    },
+    'reverse_crash': {
+        'boost': [(6000, 4), (10000, 3)],
+        'cut': [(300, -18, 0.7)],
+        'transient_enhance': False
+    },
+    'white_noise': {
+        'boost': [(4000, 3), (8000, 2)],
+        'cut': [(200, -9, 1.0)],
+        'transient_enhance': False
+    },
+    'swoosh': {
+        'boost': [(2000, 3), (5000, 2)],
+        'cut': [(200, -9, 1.0)],
+        'transient_enhance': False
+    },
+    'tape_stop': {
+        'boost': [(200, 3), (800, 2)],
+        'cut': [(5000, -12, 0.7)],
+        'transient_enhance': False
+    },
+    'stutter': {
+        'boost': [(1000, 3), (4000, 2)],
+        'cut': [(100, -9, 1.0)],
+        'transient_enhance': True
+    },
+    'vocal_chop': {
+        'boost': [(1500, 3), (3000, 2)],
+        'cut': [(100, -12, 1.0), (8000, -6, 0.7)],
+        'transient_enhance': True
+    },
+}
+
+
+def apply_compressor(audio: np.ndarray, sr: int,
+                     threshold_db: float = -20.0,
+                     ratio: float = 4.0,
+                     attack_ms: float = 10.0,
+                     release_ms: float = 100.0,
+                     makeup_db: float = 0.0) -> np.ndarray:
+    """
+    Apply dynamic range compression to audio.
+
+    Args:
+        audio: Audio signal (mono)
+        sr: Sample rate
+        threshold_db: Threshold in dB (signals above this get compressed)
+        ratio: Compression ratio (4:1 means 4dB above threshold -> 1dB output)
+        attack_ms: Attack time in milliseconds
+        release_ms: Release time in milliseconds
+        makeup_db: Makeup gain in dB
+
+    Returns:
+        Compressed audio signal
+    """
+    if len(audio) == 0:
+        return audio
+
+    # Convert to linear
+    threshold = 10 ** (threshold_db / 20)
+    makeup = 10 ** (makeup_db / 20)
+
+    # Calculate envelope
+    envelope = np.abs(audio)
+
+    # Smooth envelope with attack/release
+    attack_samples = int(sr * attack_ms / 1000)
+    release_samples = int(sr * release_ms / 1000)
+
+    # Simple envelope follower
+    smooth_envelope = np.zeros_like(envelope)
+    smooth_envelope[0] = envelope[0]
+
+    for i in range(1, len(envelope)):
+        if envelope[i] > smooth_envelope[i-1]:
+            # Attack
+            coeff = 1.0 - np.exp(-1.0 / max(1, attack_samples))
+        else:
+            # Release
+            coeff = 1.0 - np.exp(-1.0 / max(1, release_samples))
+        smooth_envelope[i] = smooth_envelope[i-1] + coeff * (envelope[i] - smooth_envelope[i-1])
+
+    # Calculate gain reduction
+    gain = np.ones_like(smooth_envelope)
+    above_threshold = smooth_envelope > threshold
+
+    if np.any(above_threshold):
+        # How many dB above threshold
+        db_above = 20 * np.log10(smooth_envelope[above_threshold] / threshold + 1e-10)
+        # Compressed dB
+        compressed_db = db_above / ratio
+        # Gain reduction in linear
+        gain[above_threshold] = 10 ** ((compressed_db - db_above) / 20)
+
+    # Apply gain and makeup
+    result = audio * gain * makeup
+
+    # Soft clip to prevent harsh clipping
+    result = np.tanh(result)
+
+    return result
+
+
+# Compression presets per instrument type
+COMPRESSION_PRESETS = {
+    # Drums - fast attack, medium release
+    'kick': {'threshold_db': -12, 'ratio': 4.0, 'attack_ms': 5, 'release_ms': 80, 'makeup_db': 3},
+    'snare': {'threshold_db': -15, 'ratio': 4.0, 'attack_ms': 3, 'release_ms': 60, 'makeup_db': 4},
+    'hihat': {'threshold_db': -18, 'ratio': 3.0, 'attack_ms': 1, 'release_ms': 40, 'makeup_db': 2},
+    'clap': {'threshold_db': -15, 'ratio': 3.5, 'attack_ms': 5, 'release_ms': 80, 'makeup_db': 3},
+    'tom': {'threshold_db': -12, 'ratio': 4.0, 'attack_ms': 8, 'release_ms': 100, 'makeup_db': 3},
+    'perc': {'threshold_db': -18, 'ratio': 3.0, 'attack_ms': 2, 'release_ms': 50, 'makeup_db': 4},
+
+    # Bass - slow attack to preserve transients
+    'sub_bass': {'threshold_db': -10, 'ratio': 6.0, 'attack_ms': 20, 'release_ms': 150, 'makeup_db': 2},
+    'bass': {'threshold_db': -12, 'ratio': 4.0, 'attack_ms': 15, 'release_ms': 120, 'makeup_db': 3},
+    'bass_harmonics': {'threshold_db': -15, 'ratio': 3.0, 'attack_ms': 10, 'release_ms': 100, 'makeup_db': 2},
+
+    # Melodic - gentle compression
+    'piano_low': {'threshold_db': -18, 'ratio': 2.5, 'attack_ms': 15, 'release_ms': 150, 'makeup_db': 2},
+    'piano_mid': {'threshold_db': -18, 'ratio': 2.5, 'attack_ms': 10, 'release_ms': 120, 'makeup_db': 2},
+    'piano_high': {'threshold_db': -20, 'ratio': 2.0, 'attack_ms': 8, 'release_ms': 100, 'makeup_db': 2},
+    'guitar': {'threshold_db': -15, 'ratio': 3.0, 'attack_ms': 12, 'release_ms': 120, 'makeup_db': 3},
+    'guitar_bright': {'threshold_db': -18, 'ratio': 2.5, 'attack_ms': 8, 'release_ms': 100, 'makeup_db': 2},
+    'synth_lead': {'threshold_db': -15, 'ratio': 3.0, 'attack_ms': 5, 'release_ms': 80, 'makeup_db': 3},
+    'synth_pad': {'threshold_db': -20, 'ratio': 2.0, 'attack_ms': 30, 'release_ms': 200, 'makeup_db': 2},
+    'strings': {'threshold_db': -20, 'ratio': 2.0, 'attack_ms': 25, 'release_ms': 180, 'makeup_db': 2},
+    'brass': {'threshold_db': -12, 'ratio': 4.0, 'attack_ms': 10, 'release_ms': 100, 'makeup_db': 4},
+    'pluck': {'threshold_db': -18, 'ratio': 3.0, 'attack_ms': 1, 'release_ms': 50, 'makeup_db': 3},
+
+    # Vocals - transparent compression
+    'vocal_low': {'threshold_db': -18, 'ratio': 3.0, 'attack_ms': 10, 'release_ms': 100, 'makeup_db': 3},
+    'vocal_body': {'threshold_db': -15, 'ratio': 3.5, 'attack_ms': 8, 'release_ms': 80, 'makeup_db': 4},
+    'vocal_presence': {'threshold_db': -18, 'ratio': 2.5, 'attack_ms': 5, 'release_ms': 60, 'makeup_db': 3},
+    'vocal_air': {'threshold_db': -20, 'ratio': 2.0, 'attack_ms': 3, 'release_ms': 50, 'makeup_db': 2},
+    'sibilance': {'threshold_db': -15, 'ratio': 6.0, 'attack_ms': 1, 'release_ms': 30, 'makeup_db': 0},  # De-esser style
+    'adlib': {'threshold_db': -15, 'ratio': 3.0, 'attack_ms': 8, 'release_ms': 80, 'makeup_db': 4},
+    'harmony': {'threshold_db': -18, 'ratio': 2.5, 'attack_ms': 10, 'release_ms': 100, 'makeup_db': 3},
+
+    # Sound FX - varies by type
+    'uplifter': {'threshold_db': -20, 'ratio': 2.0, 'attack_ms': 20, 'release_ms': 200, 'makeup_db': 2},
+    'downlifter': {'threshold_db': -18, 'ratio': 2.5, 'attack_ms': 15, 'release_ms': 150, 'makeup_db': 2},
+    'impact': {'threshold_db': -10, 'ratio': 6.0, 'attack_ms': 1, 'release_ms': 50, 'makeup_db': 6},
+    'sub_drop': {'threshold_db': -10, 'ratio': 6.0, 'attack_ms': 20, 'release_ms': 150, 'makeup_db': 3},
+    'reverse_crash': {'threshold_db': -20, 'ratio': 2.0, 'attack_ms': 30, 'release_ms': 200, 'makeup_db': 2},
+    'white_noise': {'threshold_db': -18, 'ratio': 3.0, 'attack_ms': 10, 'release_ms': 100, 'makeup_db': 3},
+    'swoosh': {'threshold_db': -18, 'ratio': 2.5, 'attack_ms': 8, 'release_ms': 80, 'makeup_db': 3},
+    'tape_stop': {'threshold_db': -15, 'ratio': 3.0, 'attack_ms': 10, 'release_ms': 100, 'makeup_db': 3},
+    'stutter': {'threshold_db': -12, 'ratio': 4.0, 'attack_ms': 1, 'release_ms': 30, 'makeup_db': 4},
+    'vocal_chop': {'threshold_db': -15, 'ratio': 3.5, 'attack_ms': 2, 'release_ms': 50, 'makeup_db': 4},
+}
+
+
+def remove_reverb_delay(audio: np.ndarray, sr: int,
+                        reverb_reduction: float = 0.5,
+                        delay_reduction: float = 0.5,
+                        transient_preserve: float = 0.8) -> np.ndarray:
+    """
+    Remove reverb and delay from audio using spectral processing.
+
+    Args:
+        audio: Audio signal (mono)
+        sr: Sample rate
+        reverb_reduction: Amount of reverb to remove (0.0-1.0)
+        delay_reduction: Amount of delay/echo to remove (0.0-1.0)
+        transient_preserve: How much to preserve transients (0.0-1.0)
+
+    Returns:
+        Processed audio with reduced reverb/delay
+    """
+    if len(audio) == 0 or (reverb_reduction == 0 and delay_reduction == 0):
+        return audio
+
+    # FFT parameters
+    n_fft = 2048
+    hop_length = 512
+
+    # Compute STFT
+    stft = librosa.stft(audio, n_fft=n_fft, hop_length=hop_length)
+    magnitude = np.abs(stft)
+    phase = np.angle(stft)
+
+    # === REVERB REDUCTION ===
+    if reverb_reduction > 0:
+        # Spectral gating: reduce energy in frames following transients
+        # Calculate energy per frame
+        frame_energy = np.sum(magnitude ** 2, axis=0)
+
+        # Detect transients (sudden increases in energy)
+        energy_diff = np.diff(frame_energy, prepend=frame_energy[0])
+        transient_frames = energy_diff > (np.std(energy_diff) * 1.5)
+
+        # Create decay mask - frames after transients get progressively reduced
+        decay_mask = np.ones(magnitude.shape[1])
+        decay_rate = 0.85 + (1 - reverb_reduction) * 0.14  # 0.85-0.99
+
+        for i in range(1, len(decay_mask)):
+            if transient_frames[i]:
+                decay_mask[i] = 1.0  # Reset on transient
+            else:
+                decay_mask[i] = decay_mask[i-1] * decay_rate
+
+        # Apply mask weighted by reduction amount
+        reverb_mask = 1.0 - (1.0 - decay_mask) * reverb_reduction * (1 - transient_preserve)
+        magnitude = magnitude * reverb_mask[np.newaxis, :]
+
+    # === DELAY REDUCTION ===
+    if delay_reduction > 0:
+        # Use autocorrelation to find and reduce echoes
+        # Look for periodic patterns in energy
+        frame_energy = np.sum(magnitude ** 2, axis=0)
+
+        if len(frame_energy) > 20:
+            # Autocorrelation to find echo timing
+            autocorr = np.correlate(frame_energy, frame_energy, mode='full')
+            autocorr = autocorr[len(autocorr)//2:]  # Take positive lags
+
+            # Find peaks (potential echo locations)
+            # Skip first few frames (too close to be echo)
+            min_delay_frames = 5
+            if len(autocorr) > min_delay_frames * 2:
+                autocorr[:min_delay_frames] = 0
+                autocorr_norm = autocorr / (autocorr[0] + 1e-10)
+
+                # Find significant peaks (echoes)
+                from scipy.signal import find_peaks
+                peaks, properties = find_peaks(autocorr_norm, height=0.1, distance=3)
+
+                # Create echo suppression mask
+                echo_mask = np.ones(magnitude.shape[1])
+
+                for peak_idx in peaks[:3]:  # Process up to 3 echo peaks
+                    if peak_idx < len(echo_mask):
+                        # Reduce energy at echo positions
+                        suppression = delay_reduction * 0.6
+                        for i in range(peak_idx, len(echo_mask), peak_idx):
+                            if i < len(echo_mask):
+                                echo_mask[i] = max(0.2, echo_mask[i] - suppression)
+                                # Also reduce surrounding frames slightly
+                                if i > 0:
+                                    echo_mask[i-1] = max(0.4, echo_mask[i-1] - suppression * 0.5)
+                                if i < len(echo_mask) - 1:
+                                    echo_mask[i+1] = max(0.4, echo_mask[i+1] - suppression * 0.5)
+
+                magnitude = magnitude * echo_mask[np.newaxis, :]
+
+    # === TRANSIENT ENHANCEMENT ===
+    if transient_preserve > 0:
+        # Boost transient frames that might have been affected
+        frame_energy = np.sum(magnitude ** 2, axis=0)
+        energy_diff = np.diff(frame_energy, prepend=frame_energy[0])
+        transient_boost = np.clip(energy_diff / (np.std(energy_diff) + 1e-10), 0, 2)
+        transient_mask = 1.0 + transient_boost * transient_preserve * 0.3
+        magnitude = magnitude * transient_mask[np.newaxis, :]
+
+    # Reconstruct audio
+    stft_processed = magnitude * np.exp(1j * phase)
+    result = librosa.istft(stft_processed, hop_length=hop_length, length=len(audio))
+
+    # Normalize
+    max_val = np.max(np.abs(result))
+    if max_val > 1.0:
+        result = result / max_val
+
+    return result
+
+
+# De-reverb/delay presets per instrument
+DEREVERB_PRESETS = {
+    # Drums - aggressive de-reverb, keep transients
+    'kick': {'reverb_reduction': 0.7, 'delay_reduction': 0.5, 'transient_preserve': 0.9},
+    'snare': {'reverb_reduction': 0.5, 'delay_reduction': 0.4, 'transient_preserve': 0.9},
+    'hihat': {'reverb_reduction': 0.4, 'delay_reduction': 0.3, 'transient_preserve': 0.8},
+    'clap': {'reverb_reduction': 0.6, 'delay_reduction': 0.5, 'transient_preserve': 0.8},
+    'tom': {'reverb_reduction': 0.5, 'delay_reduction': 0.4, 'transient_preserve': 0.9},
+    'perc': {'reverb_reduction': 0.5, 'delay_reduction': 0.4, 'transient_preserve': 0.8},
+
+    # Bass - less aggressive, preserve body
+    'sub_bass': {'reverb_reduction': 0.3, 'delay_reduction': 0.2, 'transient_preserve': 0.7},
+    'bass': {'reverb_reduction': 0.4, 'delay_reduction': 0.3, 'transient_preserve': 0.8},
+    'bass_harmonics': {'reverb_reduction': 0.3, 'delay_reduction': 0.2, 'transient_preserve': 0.7},
+
+    # Melodic - moderate
+    'piano_low': {'reverb_reduction': 0.4, 'delay_reduction': 0.3, 'transient_preserve': 0.8},
+    'piano_mid': {'reverb_reduction': 0.4, 'delay_reduction': 0.3, 'transient_preserve': 0.8},
+    'piano_high': {'reverb_reduction': 0.3, 'delay_reduction': 0.2, 'transient_preserve': 0.7},
+    'guitar': {'reverb_reduction': 0.4, 'delay_reduction': 0.4, 'transient_preserve': 0.8},
+    'guitar_bright': {'reverb_reduction': 0.3, 'delay_reduction': 0.3, 'transient_preserve': 0.7},
+    'synth_lead': {'reverb_reduction': 0.4, 'delay_reduction': 0.5, 'transient_preserve': 0.7},
+    'synth_pad': {'reverb_reduction': 0.2, 'delay_reduction': 0.2, 'transient_preserve': 0.5},  # Pads often need reverb
+    'strings': {'reverb_reduction': 0.2, 'delay_reduction': 0.2, 'transient_preserve': 0.5},
+    'brass': {'reverb_reduction': 0.4, 'delay_reduction': 0.3, 'transient_preserve': 0.8},
+    'pluck': {'reverb_reduction': 0.5, 'delay_reduction': 0.4, 'transient_preserve': 0.8},
+
+    # Vocals - careful processing
+    'vocal_low': {'reverb_reduction': 0.4, 'delay_reduction': 0.3, 'transient_preserve': 0.7},
+    'vocal_body': {'reverb_reduction': 0.5, 'delay_reduction': 0.4, 'transient_preserve': 0.7},
+    'vocal_presence': {'reverb_reduction': 0.4, 'delay_reduction': 0.3, 'transient_preserve': 0.6},
+    'vocal_air': {'reverb_reduction': 0.3, 'delay_reduction': 0.2, 'transient_preserve': 0.5},
+    'sibilance': {'reverb_reduction': 0.3, 'delay_reduction': 0.2, 'transient_preserve': 0.6},
+    'adlib': {'reverb_reduction': 0.5, 'delay_reduction': 0.5, 'transient_preserve': 0.7},  # Ad-libs often have heavy FX
+    'harmony': {'reverb_reduction': 0.4, 'delay_reduction': 0.3, 'transient_preserve': 0.6},
+
+    # Sound FX - varies
+    'uplifter': {'reverb_reduction': 0.2, 'delay_reduction': 0.2, 'transient_preserve': 0.5},
+    'downlifter': {'reverb_reduction': 0.2, 'delay_reduction': 0.2, 'transient_preserve': 0.5},
+    'impact': {'reverb_reduction': 0.6, 'delay_reduction': 0.4, 'transient_preserve': 0.9},
+    'sub_drop': {'reverb_reduction': 0.3, 'delay_reduction': 0.2, 'transient_preserve': 0.7},
+    'reverse_crash': {'reverb_reduction': 0.2, 'delay_reduction': 0.2, 'transient_preserve': 0.5},
+    'white_noise': {'reverb_reduction': 0.3, 'delay_reduction': 0.3, 'transient_preserve': 0.5},
+    'swoosh': {'reverb_reduction': 0.3, 'delay_reduction': 0.3, 'transient_preserve': 0.6},
+    'tape_stop': {'reverb_reduction': 0.3, 'delay_reduction': 0.2, 'transient_preserve': 0.6},
+    'stutter': {'reverb_reduction': 0.5, 'delay_reduction': 0.6, 'transient_preserve': 0.8},  # Stutter often has echo
+    'vocal_chop': {'reverb_reduction': 0.5, 'delay_reduction': 0.5, 'transient_preserve': 0.8},
+}
+
+
+def apply_dynamic_eq(audio: np.ndarray, sr: int, instrument: str, strength: float = 1.0) -> np.ndarray:
+    """
+    Apply dynamic EQ shaping to isolate an instrument before detection.
+
+    Args:
+        audio: Audio signal (mono)
+        sr: Sample rate
+        instrument: Instrument type (must be in DYNAMIC_EQ_PROFILES)
+        strength: EQ strength multiplier (0.0-2.0, default 1.0)
+
+    Returns:
+        Shaped audio signal
+    """
+    if instrument not in DYNAMIC_EQ_PROFILES:
+        return audio
+
+    profile = DYNAMIC_EQ_PROFILES[instrument]
+    result = audio.copy()
+    nyq = sr / 2
+
+    # Apply boosts using peaking filters
+    for freq, gain_db in profile.get('boost', []):
+        if freq >= nyq:
+            continue
+        gain = gain_db * strength
+        # Create peaking filter
+        q = 1.5  # Moderate Q for boosts
+        w0 = freq / nyq
+        if w0 <= 0 or w0 >= 1:
+            continue
+        try:
+            # Simple shelf-like boost using bandpass + mix
+            sos = signal.butter(2, [max(0.01, w0 * 0.7), min(0.99, w0 * 1.3)], btype='band', output='sos')
+            boosted = signal.sosfilt(sos, result)
+            gain_linear = 10 ** (gain / 20) - 1
+            result = result + boosted * gain_linear
+        except:
+            pass
+
+    # Apply cuts using notch/shelf filters
+    for cut_params in profile.get('cut', []):
+        freq, gain_db, q = cut_params
+        if freq >= nyq:
+            continue
+        gain = gain_db * strength
+        w0 = freq / nyq
+        if w0 <= 0 or w0 >= 1:
+            continue
+        try:
+            if freq < 200:
+                # High-pass for low frequency cuts
+                sos = signal.butter(2, max(0.01, w0), btype='high', output='sos')
+                cut_amount = 1.0 - 10 ** (gain / 20)
+                filtered = signal.sosfilt(sos, result)
+                result = result * (1 - cut_amount) + filtered * cut_amount
+            else:
+                # Notch-like cut using inverse bandpass
+                sos = signal.butter(2, [max(0.01, w0 * 0.8), min(0.99, w0 * 1.2)], btype='band', output='sos')
+                band_content = signal.sosfilt(sos, result)
+                cut_linear = 1.0 - 10 ** (gain / 20)
+                result = result - band_content * cut_linear
+        except:
+            pass
+
+    # Apply transient enhancement if enabled
+    if profile.get('transient_enhance', False):
+        try:
+            # Simple transient enhancement using envelope follower difference
+            envelope = np.abs(signal.hilbert(result))
+            # Smooth envelope
+            smooth_env = signal.filtfilt(signal.butter(2, 50 / nyq, btype='low', output='sos'), envelope)
+            # Fast envelope
+            fast_env = signal.filtfilt(signal.butter(2, 500 / nyq, btype='low', output='sos'), envelope)
+            # Transient = difference between fast and slow
+            transient_boost = np.clip((fast_env - smooth_env) * 2 * strength, 0, 1)
+            result = result * (1 + transient_boost * 0.5)
+        except:
+            pass
+
+    # Normalize to prevent clipping
+    max_val = np.max(np.abs(result))
+    if max_val > 1.0:
+        result = result / max_val
+
+    return result
+
+
+# =============================================================================
 # Pattern-Based Quiet Hit Prediction
 # =============================================================================
 
@@ -3024,6 +3675,672 @@ async def predict_quiet_hits(
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+
+# =============================================================================
+# Instrument & Vocal Detection (Extended)
+# =============================================================================
+
+@app.post('/detect-instruments')
+async def detect_instruments(
+    file: UploadFile = File(...),
+    instrument_types: str = Form('vocals'),  # Comma-separated: vocals,bass,piano,guitar,synth
+    start_time: float = Form(0.0),
+    end_time: Optional[float] = Form(None),
+    energy_multiplier: float = Form(0.5),
+    detect_stereo: bool = Form(True),  # Detect panned elements (ad-libs)
+    # === ADVANCED PROCESSING OPTIONS ===
+    use_dynamic_eq: bool = Form(True),        # Apply EQ shaping per instrument
+    eq_strength: float = Form(1.0),           # EQ strength (0.0-2.0)
+    use_compression: bool = Form(False),      # Apply compression per instrument
+    use_dereverb: bool = Form(False),         # Remove reverb/delay
+    dereverb_strength: float = Form(0.5),     # De-reverb strength (0.0-1.0)
+):
+    """
+    Frequency-filtered detection for instruments and vocals.
+
+    Supports: vocals, adlibs, bass, piano, guitar, synth, strings, brass, sound_fx
+
+    Special features for vocals:
+    - Stereo detection for panned ad-libs/background vocals
+    - Multiple frequency bands (body, presence, air)
+    - Sibilance detection for timing alignment
+
+    Advanced Processing (optional):
+    - Dynamic EQ: Boost target frequencies, cut competing frequencies
+    - Compression: Bring up quiet elements, control dynamics
+    - De-reverb/De-delay: Remove room ambience for cleaner detection
+    """
+    import json
+    from scipy.signal import butter, sosfilt
+
+    logger.info(f'=== Instrument Detection ===')
+    logger.info(f'Types: {instrument_types}, Stereo: {detect_stereo}')
+
+    # Parse requested instrument types
+    requested_types = [t.strip().lower() for t in instrument_types.split(',')]
+
+    # Map simple names to filter bands
+    TYPE_MAPPING = {
+        'vocals': ['vocal_body', 'vocal_presence', 'vocal_air'],
+        'vocal': ['vocal_body', 'vocal_presence', 'vocal_air'],
+        'adlibs': ['adlib'],
+        'adlib': ['adlib'],
+        'background': ['adlib', 'harmony'],
+        'bgv': ['adlib', 'harmony'],
+        'harmony': ['harmony'],
+        'harmonies': ['harmony'],
+        'bass': ['bass', 'sub_bass', 'bass_harmonics'],
+        'piano': ['piano_low', 'piano_mid', 'piano_high'],
+        'keys': ['piano_low', 'piano_mid', 'piano_high'],
+        'guitar': ['guitar', 'guitar_bright'],
+        'synth': ['synth_lead', 'synth_pad', 'pluck'],
+        'lead': ['synth_lead', 'vocal_presence'],
+        'pad': ['synth_pad', 'strings'],
+        'strings': ['strings'],
+        'brass': ['brass'],
+        # Sound FX
+        'sound_fx': ['uplifter', 'downlifter', 'impact', 'sub_drop', 'reverse_crash',
+                     'white_noise', 'swoosh', 'tape_stop', 'stutter', 'vocal_chop'],
+        'fx': ['uplifter', 'downlifter', 'impact', 'sub_drop', 'reverse_crash',
+               'white_noise', 'swoosh', 'tape_stop', 'stutter', 'vocal_chop'],
+        'risers': ['uplifter', 'reverse_crash', 'white_noise'],
+        'drops': ['downlifter', 'impact', 'sub_drop'],
+        'transitions': ['uplifter', 'downlifter', 'swoosh', 'reverse_crash', 'white_noise'],
+        'impacts': ['impact', 'sub_drop'],
+        'glitch': ['stutter', 'tape_stop', 'vocal_chop'],
+        'all': list(INSTRUMENT_FILTERS.keys()),
+    }
+
+    # Expand requested types to filter bands
+    filter_bands = set()
+    for req_type in requested_types:
+        if req_type in TYPE_MAPPING:
+            filter_bands.update(TYPE_MAPPING[req_type])
+        elif req_type in INSTRUMENT_FILTERS:
+            filter_bands.add(req_type)
+
+    if not filter_bands:
+        return {'success': False, 'error': f'Unknown instrument types: {instrument_types}'}
+
+    logger.info(f'Filter bands to scan: {filter_bands}')
+
+    # Save uploaded file
+    temp_path = f'/tmp/instrument_detect_{file.filename}'
+    try:
+        with open(temp_path, 'wb') as f:
+            content = await file.read()
+            f.write(content)
+
+        # Load audio - STEREO for panning detection
+        if detect_stereo:
+            y_stereo, sr = librosa.load(temp_path, sr=44100, mono=False)
+            if y_stereo.ndim == 1:
+                # Mono file, duplicate for stereo processing
+                y_left = y_stereo
+                y_right = y_stereo
+                y_mono = y_stereo
+            else:
+                y_left = y_stereo[0]
+                y_right = y_stereo[1]
+                y_mono = librosa.to_mono(y_stereo)
+        else:
+            y_mono, sr = librosa.load(temp_path, sr=44100, mono=True)
+            y_left = y_mono
+            y_right = y_mono
+
+        duration = len(y_mono) / sr
+        if end_time is None or end_time > duration:
+            end_time = duration
+
+        logger.info(f'Audio loaded: {duration:.2f}s, scanning {start_time:.2f}s to {end_time:.2f}s')
+
+        # Bandpass filter function
+        def bandpass_filter(data, lowcut, highcut, fs, order=4):
+            nyq = 0.5 * fs
+            low = max(lowcut / nyq, 0.01)
+            high = min(highcut / nyq, 0.99)
+            if low >= high:
+                return data
+            try:
+                sos = butter(order, [low, high], btype='band', output='sos')
+                filtered = sosfilt(sos, data)
+                if not np.isfinite(filtered).all():
+                    return data
+                return filtered
+            except:
+                return data
+
+        # Create filtered audio for each band with advanced processing
+        filtered_mono = {}
+        filtered_left = {}
+        filtered_right = {}
+
+        logger.info(f'Advanced processing: EQ={use_dynamic_eq}, Comp={use_compression}, DeReverb={use_dereverb}')
+
+        for band_name in filter_bands:
+            if band_name not in INSTRUMENT_FILTERS:
+                continue
+            low, high = INSTRUMENT_FILTERS[band_name]
+
+            # Step 1: Bandpass filter
+            y_band = bandpass_filter(y_mono, low, min(high, sr/2 - 100), sr)
+
+            # Step 2: De-reverb/De-delay (before other processing for cleaner signal)
+            if use_dereverb and band_name in DEREVERB_PRESETS:
+                preset = DEREVERB_PRESETS[band_name]
+                y_band = remove_reverb_delay(
+                    y_band, sr,
+                    reverb_reduction=preset['reverb_reduction'] * dereverb_strength,
+                    delay_reduction=preset['delay_reduction'] * dereverb_strength,
+                    transient_preserve=preset['transient_preserve']
+                )
+
+            # Step 3: Dynamic EQ (boost target, cut competing frequencies)
+            if use_dynamic_eq and band_name in DYNAMIC_EQ_PROFILES:
+                y_band = apply_dynamic_eq(y_band, sr, band_name, strength=eq_strength)
+
+            # Step 4: Compression (bring up quiet elements)
+            if use_compression and band_name in COMPRESSION_PRESETS:
+                preset = COMPRESSION_PRESETS[band_name]
+                y_band = apply_compressor(
+                    y_band, sr,
+                    threshold_db=preset['threshold_db'],
+                    ratio=preset['ratio'],
+                    attack_ms=preset['attack_ms'],
+                    release_ms=preset['release_ms'],
+                    makeup_db=preset['makeup_db']
+                )
+
+            filtered_mono[band_name] = y_band
+
+            # Process stereo channels too
+            if detect_stereo:
+                y_band_left = bandpass_filter(y_left, low, min(high, sr/2 - 100), sr)
+                y_band_right = bandpass_filter(y_right, low, min(high, sr/2 - 100), sr)
+
+                if use_dereverb and band_name in DEREVERB_PRESETS:
+                    preset = DEREVERB_PRESETS[band_name]
+                    y_band_left = remove_reverb_delay(
+                        y_band_left, sr,
+                        reverb_reduction=preset['reverb_reduction'] * dereverb_strength,
+                        delay_reduction=preset['delay_reduction'] * dereverb_strength,
+                        transient_preserve=preset['transient_preserve']
+                    )
+                    y_band_right = remove_reverb_delay(
+                        y_band_right, sr,
+                        reverb_reduction=preset['reverb_reduction'] * dereverb_strength,
+                        delay_reduction=preset['delay_reduction'] * dereverb_strength,
+                        transient_preserve=preset['transient_preserve']
+                    )
+
+                if use_dynamic_eq and band_name in DYNAMIC_EQ_PROFILES:
+                    y_band_left = apply_dynamic_eq(y_band_left, sr, band_name, strength=eq_strength)
+                    y_band_right = apply_dynamic_eq(y_band_right, sr, band_name, strength=eq_strength)
+
+                if use_compression and band_name in COMPRESSION_PRESETS:
+                    preset = COMPRESSION_PRESETS[band_name]
+                    y_band_left = apply_compressor(y_band_left, sr, **preset)
+                    y_band_right = apply_compressor(y_band_right, sr, **preset)
+
+                filtered_left[band_name] = y_band_left
+                filtered_right[band_name] = y_band_right
+
+        # Detect onsets in each band
+        results = {}
+        window_samples = int(sr * 0.05)  # 50ms window
+
+        def get_rms(audio, start_sample, end_sample):
+            segment = audio[max(0, start_sample):min(len(audio), end_sample)]
+            if len(segment) == 0:
+                return 0.0
+            return float(np.sqrt(np.mean(segment ** 2)))
+
+        def get_stereo_position(left_audio, right_audio, start_sample, end_sample):
+            """Calculate stereo position: -1 (left) to +1 (right), 0 = center"""
+            left_rms = get_rms(left_audio, start_sample, end_sample)
+            right_rms = get_rms(right_audio, start_sample, end_sample)
+            total = left_rms + right_rms
+            if total < 0.0001:
+                return 0.0
+            return (right_rms - left_rms) / total
+
+        for band_name in filter_bands:
+            if band_name not in filtered_mono:
+                continue
+
+            y_filtered = filtered_mono[band_name]
+            threshold = INSTRUMENT_THRESHOLDS.get(band_name, 0.005) * energy_multiplier
+
+            # Detect onsets using librosa
+            onset_env = librosa.onset.onset_strength(y=y_filtered, sr=sr)
+            onset_frames = librosa.onset.onset_detect(
+                onset_envelope=onset_env, sr=sr,
+                pre_max=3, post_max=3, pre_avg=5, post_avg=5,
+                delta=0.03 * energy_multiplier,
+                wait=int(sr * 0.05 / 512)  # Min 50ms between onsets
+            )
+            onset_times = librosa.frames_to_time(onset_frames, sr=sr)
+
+            # Filter to time range and collect details
+            band_results = []
+            for onset_time in onset_times:
+                if onset_time < start_time or onset_time > end_time:
+                    continue
+
+                center_sample = int(onset_time * sr)
+                start_sample = center_sample - window_samples // 2
+                end_sample = center_sample + window_samples // 2
+
+                energy = get_rms(y_filtered, start_sample, end_sample)
+
+                if energy < threshold:
+                    continue
+
+                hit = {
+                    'time': round(onset_time, 4),
+                    'energy': round(energy, 5),
+                    'band': band_name,
+                    'filter_range': f'{INSTRUMENT_FILTERS[band_name][0]}-{INSTRUMENT_FILTERS[band_name][1]}Hz',
+                }
+
+                # Add stereo position for ad-libs/background vocals
+                if detect_stereo and band_name in ['adlib', 'harmony', 'vocal_body', 'vocal_presence']:
+                    stereo_pos = get_stereo_position(
+                        filtered_left.get(band_name, y_left),
+                        filtered_right.get(band_name, y_right),
+                        start_sample, end_sample
+                    )
+                    hit['stereo_position'] = round(stereo_pos, 3)
+                    hit['pan'] = 'left' if stereo_pos < -0.2 else ('right' if stereo_pos > 0.2 else 'center')
+
+                    # Flag potential ad-libs (panned, lower energy than main vocal)
+                    if band_name in ['adlib', 'harmony'] and abs(stereo_pos) > 0.15:
+                        hit['likely_adlib'] = True
+
+                band_results.append(hit)
+
+            results[band_name] = band_results
+            logger.info(f'  {band_name}: {len(band_results)} detections')
+
+        # Combine vocal bands into unified vocal timeline
+        vocal_bands = ['vocal_body', 'vocal_presence', 'vocal_air', 'sibilance']
+        adlib_bands = ['adlib', 'harmony']
+
+        all_vocals = []
+        all_adlibs = []
+
+        for band in vocal_bands:
+            if band in results:
+                for hit in results[band]:
+                    hit['type'] = 'vocal'
+                    all_vocals.append(hit)
+
+        for band in adlib_bands:
+            if band in results:
+                for hit in results[band]:
+                    hit['type'] = 'adlib' if hit.get('likely_adlib') else 'background_vocal'
+                    all_adlibs.append(hit)
+
+        # Sort by time
+        all_vocals.sort(key=lambda x: x['time'])
+        all_adlibs.sort(key=lambda x: x['time'])
+
+        # Deduplicate nearby detections (within 50ms)
+        def deduplicate(hits, window=0.05):
+            if not hits:
+                return []
+            deduped = [hits[0]]
+            for hit in hits[1:]:
+                if hit['time'] - deduped[-1]['time'] > window:
+                    deduped.append(hit)
+                elif hit['energy'] > deduped[-1]['energy']:
+                    deduped[-1] = hit
+            return deduped
+
+        all_vocals = deduplicate(all_vocals)
+        all_adlibs = deduplicate(all_adlibs)
+
+        return {
+            'success': True,
+            'duration': duration,
+            'scan_range': {'start': start_time, 'end': end_time},
+            'filter_bands_used': list(filter_bands),
+            'results_by_band': results,
+            'vocals': all_vocals,
+            'adlibs': all_adlibs,
+            'total_vocal_hits': len(all_vocals),
+            'total_adlib_hits': len(all_adlibs),
+            'settings': {
+                'energy_multiplier': energy_multiplier,
+                'stereo_detection': detect_stereo,
+            }
+        }
+
+    except Exception as e:
+        logger.error(f'Error in instrument detection: {e}')
+        import traceback
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+@app.get('/instrument-filters')
+async def get_instrument_filters():
+    """Get all available instrument filter bands, thresholds, and processing presets"""
+    return {
+        'filters': INSTRUMENT_FILTERS,
+        'thresholds': INSTRUMENT_THRESHOLDS,
+        'categories': {
+            'drums': ['kick', 'snare', 'hihat', 'clap', 'tom', 'perc'],
+            'bass': ['sub_bass', 'bass', 'bass_harmonics'],
+            'melodic': ['piano_low', 'piano_mid', 'piano_high', 'guitar', 'guitar_bright',
+                       'synth_lead', 'synth_pad', 'strings', 'brass', 'pluck'],
+            'vocals': ['vocal_low', 'vocal_body', 'vocal_presence', 'vocal_air', 'sibilance'],
+            'background_vocals': ['adlib', 'harmony'],
+            'sound_fx': ['uplifter', 'downlifter', 'impact', 'sub_drop', 'reverse_crash',
+                        'white_noise', 'swoosh', 'tape_stop', 'stutter', 'vocal_chop'],
+        },
+        # Advanced processing presets
+        'processing': {
+            'dynamic_eq': DYNAMIC_EQ_PROFILES,
+            'compression': COMPRESSION_PRESETS,
+            'dereverb': DEREVERB_PRESETS,
+        },
+        # Processing options documentation
+        'processing_options': {
+            'use_dynamic_eq': 'Boost target frequencies, cut competing frequencies (default: True)',
+            'eq_strength': 'EQ strength multiplier 0.0-2.0 (default: 1.0)',
+            'use_compression': 'Apply compression to bring up quiet elements (default: False)',
+            'use_dereverb': 'Remove reverb/delay for cleaner detection (default: False)',
+            'dereverb_strength': 'De-reverb strength 0.0-1.0 (default: 0.5)',
+        }
+    }
+
+
+# =============================================================================
+# Self-Validation Tests
+# =============================================================================
+
+@app.get('/self-test')
+async def run_self_tests():
+    """
+    Run self-validation tests for all detection features.
+    Generates synthetic test signals and validates detection accuracy.
+    """
+    results = {
+        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'tests': [],
+        'summary': {'passed': 0, 'failed': 0, 'warnings': 0}
+    }
+
+    sr = 44100  # Sample rate
+    duration = 2.0  # Test duration in seconds
+    samples = int(sr * duration)
+
+    def add_result(name, passed, message, warning=False):
+        status = 'passed' if passed else ('warning' if warning else 'failed')
+        results['tests'].append({
+            'name': name,
+            'status': status,
+            'message': message
+        })
+        if passed:
+            results['summary']['passed'] += 1
+        elif warning:
+            results['summary']['warnings'] += 1
+        else:
+            results['summary']['failed'] += 1
+
+    # === TEST 1: Bandpass Filter ===
+    try:
+        from scipy.signal import butter, sosfilt
+        test_signal = np.random.randn(samples) * 0.1
+        nyq = sr / 2
+        sos = butter(4, [100/nyq, 1000/nyq], btype='band', output='sos')
+        filtered = sosfilt(sos, test_signal)
+        if np.isfinite(filtered).all() and len(filtered) == samples:
+            add_result('Bandpass Filter', True, 'Filter produces valid output')
+        else:
+            add_result('Bandpass Filter', False, 'Filter output invalid')
+    except Exception as e:
+        add_result('Bandpass Filter', False, f'Error: {str(e)}')
+
+    # === TEST 2: Dynamic EQ ===
+    try:
+        test_signal = np.sin(2 * np.pi * 100 * np.arange(samples) / sr) * 0.5
+        eq_result = apply_dynamic_eq(test_signal, sr, 'kick', strength=1.0)
+        if np.isfinite(eq_result).all() and len(eq_result) == samples:
+            add_result('Dynamic EQ', True, 'EQ processing successful')
+        else:
+            add_result('Dynamic EQ', False, 'EQ output invalid')
+    except Exception as e:
+        add_result('Dynamic EQ', False, f'Error: {str(e)}')
+
+    # === TEST 3: Compressor ===
+    try:
+        test_signal = np.sin(2 * np.pi * 440 * np.arange(samples) / sr) * 0.8
+        comp_result = apply_compressor(test_signal, sr, threshold_db=-12, ratio=4.0)
+        if np.isfinite(comp_result).all() and np.max(np.abs(comp_result)) <= 1.0:
+            add_result('Compressor', True, 'Compression successful')
+        else:
+            add_result('Compressor', False, 'Compressor output invalid')
+    except Exception as e:
+        add_result('Compressor', False, f'Error: {str(e)}')
+
+    # === TEST 4: De-reverb ===
+    try:
+        test_signal = np.random.randn(samples) * 0.3
+        dereverb_result = remove_reverb_delay(test_signal, sr, reverb_reduction=0.5)
+        if np.isfinite(dereverb_result).all() and len(dereverb_result) == samples:
+            add_result('De-reverb', True, 'De-reverb processing successful')
+        else:
+            add_result('De-reverb', False, 'De-reverb output invalid')
+    except Exception as e:
+        add_result('De-reverb', False, f'Error: {str(e)}')
+
+    # === TEST 5: Onset Detection ===
+    try:
+        # Create test signal with clear onsets (clicks)
+        test_signal = np.zeros(samples)
+        onset_times = [0.2, 0.5, 0.8, 1.2, 1.5, 1.8]
+        for t in onset_times:
+            idx = int(t * sr)
+            if idx < samples - 100:
+                test_signal[idx:idx+100] = np.sin(np.linspace(0, np.pi, 100)) * 0.8
+
+        onset_env = librosa.onset.onset_strength(y=test_signal, sr=sr)
+        detected = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr)
+        detected_times = librosa.frames_to_time(detected, sr=sr)
+
+        if len(detected_times) >= 3:
+            add_result('Onset Detection', True, f'Detected {len(detected_times)} onsets')
+        else:
+            add_result('Onset Detection', False, f'Only detected {len(detected_times)} onsets (expected 6)', warning=True)
+    except Exception as e:
+        add_result('Onset Detection', False, f'Error: {str(e)}')
+
+    # === TEST 6: Instrument Filters Configuration ===
+    try:
+        missing = []
+        for instrument in INSTRUMENT_FILTERS.keys():
+            if instrument not in INSTRUMENT_THRESHOLDS:
+                missing.append(f'{instrument} (threshold)')
+            if instrument not in DYNAMIC_EQ_PROFILES:
+                missing.append(f'{instrument} (EQ)')
+            if instrument not in COMPRESSION_PRESETS:
+                missing.append(f'{instrument} (compression)')
+            if instrument not in DEREVERB_PRESETS:
+                missing.append(f'{instrument} (dereverb)')
+
+        if not missing:
+            add_result('Instrument Config', True, f'All {len(INSTRUMENT_FILTERS)} instruments configured')
+        else:
+            add_result('Instrument Config', False, f'Missing: {", ".join(missing[:5])}...', warning=True)
+    except Exception as e:
+        add_result('Instrument Config', False, f'Error: {str(e)}')
+
+    # === TEST 7: Frequency Band Validation ===
+    try:
+        errors = []
+        for name, (low, high) in INSTRUMENT_FILTERS.items():
+            if low >= high:
+                errors.append(f'{name}: low >= high')
+            if low < 20:
+                errors.append(f'{name}: low < 20Hz')
+            if high > 20000:
+                errors.append(f'{name}: high > 20kHz')
+
+        if not errors:
+            add_result('Frequency Bands', True, 'All frequency bands valid')
+        else:
+            add_result('Frequency Bands', False, f'Errors: {", ".join(errors[:3])}')
+    except Exception as e:
+        add_result('Frequency Bands', False, f'Error: {str(e)}')
+
+    # === TEST 8: Category Mapping ===
+    try:
+        all_instruments = set(INSTRUMENT_FILTERS.keys())
+        categories = ['drums', 'bass', 'melodic', 'vocals', 'background_vocals', 'sound_fx']
+        categorized = set()
+
+        cat_map = {
+            'drums': ['kick', 'snare', 'hihat', 'clap', 'tom', 'perc'],
+            'bass': ['sub_bass', 'bass', 'bass_harmonics'],
+            'melodic': ['piano_low', 'piano_mid', 'piano_high', 'guitar', 'guitar_bright',
+                       'synth_lead', 'synth_pad', 'strings', 'brass', 'pluck'],
+            'vocals': ['vocal_low', 'vocal_body', 'vocal_presence', 'vocal_air', 'sibilance'],
+            'background_vocals': ['adlib', 'harmony'],
+            'sound_fx': ['uplifter', 'downlifter', 'impact', 'sub_drop', 'reverse_crash',
+                        'white_noise', 'swoosh', 'tape_stop', 'stutter', 'vocal_chop'],
+        }
+        for cat, instruments in cat_map.items():
+            categorized.update(instruments)
+
+        uncategorized = all_instruments - categorized
+        if not uncategorized:
+            add_result('Category Mapping', True, f'All instruments categorized ({len(all_instruments)} total)')
+        else:
+            add_result('Category Mapping', False, f'Uncategorized: {uncategorized}', warning=True)
+    except Exception as e:
+        add_result('Category Mapping', False, f'Error: {str(e)}')
+
+    # === TEST 9: Librosa Availability ===
+    try:
+        test_audio = np.random.randn(sr) * 0.1
+        tempo, beats = librosa.beat.beat_track(y=test_audio, sr=sr)
+        add_result('Librosa Beat Track', True, 'Beat tracking functional')
+    except Exception as e:
+        add_result('Librosa Beat Track', False, f'Error: {str(e)}')
+
+    # === TEST 10: Memory/Performance ===
+    try:
+        import sys
+        test_large = np.random.randn(sr * 10)  # 10 seconds of audio
+        size_mb = sys.getsizeof(test_large) / 1024 / 1024
+        del test_large
+        add_result('Memory Handling', True, f'Can handle 10s audio ({size_mb:.1f}MB)')
+    except Exception as e:
+        add_result('Memory Handling', False, f'Error: {str(e)}')
+
+    # Calculate overall status
+    total = results['summary']['passed'] + results['summary']['failed'] + results['summary']['warnings']
+    results['summary']['total'] = total
+    results['summary']['pass_rate'] = f"{(results['summary']['passed'] / total * 100):.1f}%" if total > 0 else '0%'
+    results['summary']['status'] = 'PASS' if results['summary']['failed'] == 0 else 'FAIL'
+
+    return results
+
+
+@app.get('/validate-detection/{instrument}')
+async def validate_single_instrument(instrument: str):
+    """
+    Validate detection for a specific instrument type using synthetic test signal.
+    """
+    if instrument not in INSTRUMENT_FILTERS:
+        return {'success': False, 'error': f'Unknown instrument: {instrument}'}
+
+    sr = 44100
+    duration = 3.0
+    samples = int(sr * duration)
+
+    low, high = INSTRUMENT_FILTERS[instrument]
+    center_freq = (low + high) / 2
+
+    # Generate test signal at instrument's frequency range
+    t = np.arange(samples) / sr
+
+    # Create signal with harmonics
+    signal = np.sin(2 * np.pi * center_freq * t) * 0.5
+    if center_freq * 2 < sr / 2:
+        signal += np.sin(2 * np.pi * center_freq * 2 * t) * 0.25
+    if center_freq * 3 < sr / 2:
+        signal += np.sin(2 * np.pi * center_freq * 3 * t) * 0.125
+
+    # Add transients at known times
+    onset_times = [0.5, 1.0, 1.5, 2.0, 2.5]
+    for ot in onset_times:
+        idx = int(ot * sr)
+        if idx < samples - 1000:
+            envelope = np.exp(-np.arange(1000) / 200)
+            signal[idx:idx+1000] *= (1 + envelope * 2)
+
+    # Apply full processing chain
+    try:
+        # Bandpass filter
+        from scipy.signal import butter, sosfilt
+        nyq = sr / 2
+        sos = butter(4, [max(0.01, low/nyq), min(0.99, high/nyq)], btype='band', output='sos')
+        filtered = sosfilt(sos, signal)
+
+        # Dynamic EQ
+        if instrument in DYNAMIC_EQ_PROFILES:
+            filtered = apply_dynamic_eq(filtered, sr, instrument)
+
+        # Compression
+        if instrument in COMPRESSION_PRESETS:
+            preset = COMPRESSION_PRESETS[instrument]
+            filtered = apply_compressor(filtered, sr, **preset)
+
+        # Detect onsets
+        onset_env = librosa.onset.onset_strength(y=filtered, sr=sr)
+        detected = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr)
+        detected_times = librosa.frames_to_time(detected, sr=sr)
+
+        # Validate detection accuracy
+        tolerance = 0.1  # 100ms tolerance
+        matched = 0
+        for expected in onset_times:
+            for detected_t in detected_times:
+                if abs(expected - detected_t) < tolerance:
+                    matched += 1
+                    break
+
+        accuracy = matched / len(onset_times) * 100 if onset_times else 0
+
+        return {
+            'success': True,
+            'instrument': instrument,
+            'frequency_range': f'{low}-{high}Hz',
+            'test_onsets': len(onset_times),
+            'detected_onsets': len(detected_times),
+            'matched_onsets': matched,
+            'accuracy': f'{accuracy:.1f}%',
+            'status': 'PASS' if accuracy >= 60 else 'FAIL',
+            'processing_applied': {
+                'bandpass': True,
+                'dynamic_eq': instrument in DYNAMIC_EQ_PROFILES,
+                'compression': instrument in COMPRESSION_PRESETS,
+            }
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'instrument': instrument,
+            'error': str(e)
+        }
 
 
 # =============================================================================

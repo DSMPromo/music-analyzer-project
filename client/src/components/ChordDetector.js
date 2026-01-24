@@ -1,14 +1,83 @@
 import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import { jsPDF } from 'jspdf';
 import { useChordDetection } from '../hooks/useChordDetection';
+import { useAdvancedChordDetection } from '../hooks/useAdvancedChordDetection';
 
-function ChordDetector({ chromagram, chromagramByOctave, showHistory, showDiagram, showPiano, tempo, detectedKey }) {
+// Drum to note mapping for Rhythmic Mode
+const DRUM_NOTE_MAP = {
+  kick: 'C',
+  snare: 'G',
+  hihat: 'D',
+  clap: 'A',
+  tom: 'E',
+  perc: 'B',
+};
+
+function ChordDetector({
+  chromagram,
+  chromagramByOctave,
+  showHistory,
+  showDiagram,
+  showPiano,
+  tempo,
+  detectedKey,
+  // Rhythmic mode props
+  drumHits,
+  currentTimeMs,
+  isPlaying,
+  // Advanced mode props
+  analyser,
+  stems, // { vocals, bass, drums, other } if available
+}) {
   const {
-    currentChord,
-    chordHistory,
+    currentChord: basicChord,
+    chordHistory: basicHistory,
+    hasHarmonicContent,
     analyzeChromagram,
-    clearHistory,
+    clearHistory: clearBasicHistory,
   } = useChordDetection();
+
+  // Advanced chord detection
+  const [advancedMode, setAdvancedMode] = useState(false);
+  const {
+    isEnabled: advancedEnabled,
+    currentChord: advancedChord,
+    confidence: advancedConfidence,
+    chordHistory: advancedHistory,
+    instrumentContributions,
+    bassNote,
+    chromaTotal,
+    isStable,
+    mode: detectionMode,
+    enable: enableAdvanced,
+    disable: disableAdvanced,
+    reset: resetAdvanced,
+    processFullMix,
+    getChordSymbol,
+    getConfidenceColor,
+    HARMONIC_INSTRUMENTS,
+  } = useAdvancedChordDetection({
+    enabled: advancedMode,
+    stems
+  });
+
+  // Use advanced or basic detection based on mode
+  const currentChord = advancedMode && advancedChord ? {
+    ...advancedChord,
+    symbol: `${advancedChord.root}${advancedChord.type === 'maj' ? '' : advancedChord.type}`,
+    quality: advancedChord.type,
+    confidence: advancedConfidence
+  } : basicChord;
+
+  const chordHistory = advancedMode ? advancedHistory.map(h => ({
+    ...h.chord,
+    symbol: `${h.chord.root}${h.chord.type === 'maj' ? '' : h.chord.type}`,
+    quality: h.chord.type,
+    confidence: h.confidence,
+    timestamp: h.timestamp
+  })) : basicHistory;
+
+  const clearHistory = advancedMode ? resetAdvanced : clearBasicHistory;
 
   const [timeSignature, setTimeSignature] = useState('4/4'); // '4/4', '6/8', '3/4'
   const [voicingType, setVoicingType] = useState('root'); // 'root', 'inv1', 'inv2', 'inv3', 'shell', 'open'
@@ -23,6 +92,40 @@ function ChordDetector({ chromagram, chromagramByOctave, showHistory, showDiagra
   // Circle of Fifths order
   const CIRCLE_OF_FIFTHS = ['C', 'G', 'D', 'A', 'E', 'B', 'F#', 'Db', 'Ab', 'Eb', 'Bb', 'F'];
   const MINOR_CIRCLE = ['Am', 'Em', 'Bm', 'F#m', 'C#m', 'G#m', 'Ebm', 'Bbm', 'Fm', 'Cm', 'Gm', 'Dm'];
+
+  // Enharmonic equivalents: sharps to flats mapping
+  const ENHARMONIC_MAP = {
+    'A#': 'Bb', 'C#': 'Db', 'D#': 'Eb', 'F#': 'F#', 'G#': 'Ab',
+    'Bb': 'Bb', 'Db': 'Db', 'Eb': 'Eb', 'Ab': 'Ab', // Already flat
+    'C': 'C', 'D': 'D', 'E': 'E', 'F': 'F', 'G': 'G', 'A': 'A', 'B': 'B' // Natural
+  };
+
+  // Normalize note name for Circle of Fifths comparison
+  const normalizeNote = (note) => ENHARMONIC_MAP[note] || note;
+
+  // Calculate which drums are currently active (for rhythmic circle)
+  const activeDrums = useMemo(() => {
+    if (!drumHits || !isPlaying) return {};
+
+    const active = {};
+    const lookbackMs = 150; // How long a hit stays "active" visually
+
+    Object.entries(drumHits).forEach(([drumType, hits]) => {
+      if (!hits || !Array.isArray(hits)) return;
+
+      // Check if any hit is within the lookback window
+      const recentHit = hits.find(hit => {
+        const hitTime = hit.timestamp;
+        return hitTime <= currentTimeMs && hitTime > currentTimeMs - lookbackMs;
+      });
+
+      if (recentHit) {
+        active[drumType] = true;
+      }
+    });
+
+    return active;
+  }, [drumHits, currentTimeMs, isPlaying]);
 
   // Initialize AudioContext on first interaction
   const getAudioContext = useCallback(() => {
@@ -161,11 +264,32 @@ function ChordDetector({ chromagram, chromagramByOctave, showHistory, showDiagra
     }
   }, [timeSignature]);
 
+  // Enable/disable advanced mode
   useEffect(() => {
-    if (chromagram) {
+    if (advancedMode) {
+      enableAdvanced();
+    } else {
+      disableAdvanced();
+    }
+  }, [advancedMode, enableAdvanced, disableAdvanced]);
+
+  // Basic mode: analyze chromagram
+  useEffect(() => {
+    if (chromagram && !advancedMode) {
       analyzeChromagram(chromagram);
     }
-  }, [chromagram, analyzeChromagram]);
+  }, [chromagram, analyzeChromagram, advancedMode]);
+
+  // Advanced mode: process with multi-instrument fusion
+  useEffect(() => {
+    if (!advancedMode || !analyser || !isPlaying) return;
+
+    const interval = setInterval(() => {
+      processFullMix(analyser);
+    }, 50); // 20 fps
+
+    return () => clearInterval(interval);
+  }, [advancedMode, analyser, isPlaying, processFullMix]);
 
   const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
@@ -501,14 +625,30 @@ function ChordDetector({ chromagram, chromagramByOctave, showHistory, showDiagra
     playChordVoicing(getChordVoicing);
   }, [currentChord, autoPlay, getChordVoicing, playChordVoicing]);
 
-  // Render Circle of Fifths SVG component
-  const renderCircleOfFifths = () => {
-    const radius = 100;
-    const innerRadius = 60;
-    const centerX = 120;
-    const centerY = 120;
+  // Drum colors for rhythmic circle
+  const DRUM_COLORS = {
+    kick: '#e94560',    // Red
+    snare: '#3b82f6',   // Blue
+    hihat: '#22c55e',   // Green
+    clap: '#f97316',    // Orange
+    tom: '#a855f7',     // Purple
+    perc: '#eab308',    // Yellow
+  };
 
-    // Get position for each note on circle
+  // Get active drum names for center display
+  const activeDrumNames = useMemo(() => {
+    return Object.keys(activeDrums).map(drum =>
+      drum.charAt(0).toUpperCase() + drum.slice(1)
+    );
+  }, [activeDrums]);
+
+  // Render Harmonic Circle of Fifths (LEFT - for chords)
+  const renderHarmonicCircle = () => {
+    const radius = 80;
+    const innerRadius = 48;
+    const centerX = 95;
+    const centerY = 95;
+
     const getPosition = (index, r) => {
       const angle = (index * 30 - 90) * (Math.PI / 180);
       return {
@@ -518,39 +658,37 @@ function ChordDetector({ chromagram, chromagramByOctave, showHistory, showDiagra
     };
 
     const rootNote = currentChord?.root || '';
+    const normalizedRoot = normalizeNote(rootNote); // Convert A# to Bb, etc.
     const isMinor = currentChord?.quality?.includes('min');
-    const relatedChords = getRelatedChords(rootNote);
+    const relatedChords = getRelatedChords(normalizedRoot);
 
     return (
-      <svg width="240" height="240" className="circle-of-fifths" data-testid="circle-of-fifths">
+      <svg width="190" height="190" className="circle-of-fifths harmonic-circle" data-testid="circle-of-fifths">
+        {/* Title */}
+        <text x={centerX} y={15} textAnchor="middle" fill="#e94560" fontSize="11" fontWeight="600">
+          HARMONIC
+        </text>
+
         {/* Background circle */}
-        <circle cx={centerX} cy={centerY} r={radius + 15} fill="#0a0a14" stroke="#0f3460" strokeWidth="2" />
+        <circle cx={centerX} cy={centerY} r={radius + 12} fill="#0a0a14" stroke="#e94560" strokeWidth="2" />
 
         {/* Outer ring - Major keys */}
         {CIRCLE_OF_FIFTHS.map((note, i) => {
           const pos = getPosition(i, radius);
-          const isActive = rootNote === note && !isMinor;
+          const isActive = normalizedRoot === note && !isMinor;
           const isRelated = relatedChords.includes(note);
           return (
             <g key={note}>
               <circle
                 cx={pos.x}
                 cy={pos.y}
-                r={18}
-                className={`cof-note ${isActive ? 'active' : ''} ${isRelated ? 'related' : ''}`}
+                r={isActive ? 16 : 14}
                 fill={isActive ? '#e94560' : isRelated ? '#0f3460' : '#16213e'}
                 stroke={isActive ? '#e94560' : isRelated ? '#3b82f6' : '#0f3460'}
-                strokeWidth={isRelated ? 3 : 2}
+                strokeWidth={isActive ? 3 : isRelated ? 2 : 1}
+                style={isActive ? { filter: 'drop-shadow(0 0 6px #e94560)' } : {}}
               />
-              <text
-                x={pos.x}
-                y={pos.y}
-                textAnchor="middle"
-                dy="5"
-                fill="white"
-                fontSize="12"
-                fontWeight="600"
-              >
+              <text x={pos.x} y={pos.y} textAnchor="middle" dy="4" fill="white" fontSize="10" fontWeight={isActive ? 700 : 500}>
                 {note}
               </text>
             </g>
@@ -561,45 +699,124 @@ function ChordDetector({ chromagram, chromagramByOctave, showHistory, showDiagra
         {MINOR_CIRCLE.map((note, i) => {
           const pos = getPosition(i, innerRadius);
           const minorRoot = note.replace('m', '');
-          const isActive = rootNote === minorRoot && isMinor;
+          const isActive = normalizedRoot === minorRoot && isMinor;
           return (
             <g key={note}>
               <circle
                 cx={pos.x}
                 cy={pos.y}
-                r={14}
+                r={isActive ? 12 : 10}
                 fill={isActive ? '#a855f7' : '#0f3460'}
                 stroke={isActive ? '#a855f7' : '#16213e'}
-                strokeWidth="2"
-                opacity={isActive ? 1 : 0.8}
+                strokeWidth={isActive ? 2 : 1}
+                style={isActive ? { filter: 'drop-shadow(0 0 6px #a855f7)' } : {}}
               />
-              <text
-                x={pos.x}
-                y={pos.y}
-                textAnchor="middle"
-                dy="4"
-                fill="white"
-                fontSize="9"
-                fontWeight="500"
-              >
+              <text x={pos.x} y={pos.y} textAnchor="middle" dy="3" fill="white" fontSize="7" fontWeight="500">
                 {note}
               </text>
             </g>
           );
         })}
 
-        {/* Center - current chord symbol */}
-        <text
-          x={centerX}
-          y={centerY}
-          textAnchor="middle"
-          dy="8"
-          fill="white"
-          fontSize="22"
-          fontWeight="bold"
-        >
+        {/* Center - chord symbol */}
+        <text x={centerX} y={centerY + 5} textAnchor="middle" fill="white" fontSize="18" fontWeight="bold">
           {currentChord?.symbol || '—'}
         </text>
+      </svg>
+    );
+  };
+
+  // Render Rhythmic Circle (RIGHT - for drums)
+  const renderRhythmicCircle = () => {
+    const radius = 80;
+    const centerX = 95;
+    const centerY = 95;
+
+    const getPosition = (index, r) => {
+      const angle = (index * 30 - 90) * (Math.PI / 180);
+      return {
+        x: centerX + r * Math.cos(angle),
+        y: centerY + r * Math.sin(angle)
+      };
+    };
+
+    // Check if this note is mapped to an active drum
+    const isNoteActiveDrum = (note) => {
+      for (const [drumType, drumNote] of Object.entries(DRUM_NOTE_MAP)) {
+        if (drumNote === note && activeDrums[drumType]) {
+          return drumType;
+        }
+      }
+      return null;
+    };
+
+    return (
+      <svg width="190" height="190" className="circle-of-fifths rhythmic-circle" data-testid="rhythmic-circle">
+        {/* Title */}
+        <text x={centerX} y={15} textAnchor="middle" fill="#22c55e" fontSize="11" fontWeight="600">
+          RHYTHMIC
+        </text>
+
+        {/* Background circle */}
+        <circle cx={centerX} cy={centerY} r={radius + 12} fill="#0a0a14" stroke="#22c55e" strokeWidth="2" />
+
+        {/* Drum positions on circle */}
+        {CIRCLE_OF_FIFTHS.map((note, i) => {
+          const pos = getPosition(i, radius);
+          const activeDrum = isNoteActiveDrum(note);
+          const drumColor = activeDrum ? DRUM_COLORS[activeDrum] : null;
+          const hasDrumMapping = Object.values(DRUM_NOTE_MAP).includes(note);
+
+          return (
+            <g key={note}>
+              <circle
+                cx={pos.x}
+                cy={pos.y}
+                r={activeDrum ? 18 : 14}
+                fill={activeDrum ? drumColor : hasDrumMapping ? '#1a1a2e' : '#0f0f1a'}
+                stroke={activeDrum ? drumColor : hasDrumMapping ? '#333' : '#222'}
+                strokeWidth={activeDrum ? 3 : 1}
+                opacity={hasDrumMapping ? 1 : 0.3}
+                style={activeDrum ? {
+                  filter: `drop-shadow(0 0 10px ${drumColor})`,
+                  transition: 'all 0.05s ease'
+                } : {}}
+              />
+              <text
+                x={pos.x}
+                y={pos.y}
+                textAnchor="middle"
+                dy="4"
+                fill={activeDrum ? 'white' : hasDrumMapping ? '#888' : '#444'}
+                fontSize={activeDrum ? 11 : 10}
+                fontWeight={activeDrum ? 700 : 400}
+              >
+                {note}
+              </text>
+              {/* Show drum name below active note */}
+              {activeDrum && (
+                <text x={pos.x} y={pos.y + 22} textAnchor="middle" fill={drumColor} fontSize="7" fontWeight="600">
+                  {activeDrum.toUpperCase()}
+                </text>
+              )}
+            </g>
+          );
+        })}
+
+        {/* Center - active drums */}
+        <text x={centerX} y={centerY - 5} textAnchor="middle" fill="#22c55e" fontSize="12" fontWeight="bold">
+          {activeDrumNames.length > 0 ? activeDrumNames.slice(0, 2).join('+') : '—'}
+        </text>
+        {activeDrumNames.length > 2 && (
+          <text x={centerX} y={centerY + 10} textAnchor="middle" fill="#22c55e" fontSize="10" fontWeight="bold">
+            +{activeDrumNames.length - 2}
+          </text>
+        )}
+        {activeDrumNames.length === 0 && (
+          <text x={centerX} y={centerY + 12} textAnchor="middle" fill="#666" fontSize="9">
+            drums
+          </text>
+        )}
       </svg>
     );
   };
@@ -874,6 +1091,28 @@ function ChordDetector({ chromagram, chromagramByOctave, showHistory, showDiagra
 
   return (
     <div className="chord-detector" data-testid="chord-display">
+      {/* Advanced Mode Toggle */}
+      <div className="detection-mode-toggle">
+        <label className="mode-switch">
+          <input
+            type="checkbox"
+            checked={advancedMode}
+            onChange={(e) => setAdvancedMode(e.target.checked)}
+          />
+          <span className="mode-slider"></span>
+          <span className="mode-label">
+            {advancedMode ? 'Advanced' : 'Basic'}
+          </span>
+        </label>
+        {advancedMode && (
+          <div className="advanced-info">
+            <span className="mode-badge">{stems ? 'Stems' : 'Full Mix'}</span>
+            {bassNote && <span className="bass-note">Bass: {bassNote}</span>}
+            {isStable && <span className="stable-badge">Stable</span>}
+          </div>
+        )}
+      </div>
+
       {/* Current Chord Display */}
       <div className="current-chord-section">
         <div className="current-chord-display">
@@ -885,15 +1124,52 @@ function ChordDetector({ chromagram, chromagramByOctave, showHistory, showDiagra
                 <span className="chord-confidence-bar">
                   <span
                     className="confidence-fill"
-                    style={{ width: `${currentChord.confidence * 100}%` }}
+                    style={{
+                      width: `${currentChord.confidence * 100}%`,
+                      backgroundColor: advancedMode ? getConfidenceColor() : undefined
+                    }}
                   />
                 </span>
+                {advancedMode && (
+                  <span className="confidence-value">
+                    {Math.round(currentChord.confidence * 100)}%
+                  </span>
+                )}
               </div>
             </>
           ) : (
-            <span className="no-chord">Play audio to detect chords</span>
+            <span className="no-chord">
+              {!hasHarmonicContent
+                ? 'No chord sound detected (percussion only)'
+                : 'Play audio to detect chords'}
+            </span>
           )}
         </div>
+
+        {/* Instrument Contributions (Advanced Mode) */}
+        {advancedMode && instrumentContributions.length > 0 && (
+          <div className="instrument-contributions">
+            <h5>Instrument Weights</h5>
+            <div className="contribution-bars">
+              {instrumentContributions
+                .filter(ic => ic.weight > 0.1)
+                .sort((a, b) => b.weight - a.weight)
+                .slice(0, 5)
+                .map(ic => (
+                  <div key={ic.instrument} className="contribution-item">
+                    <span className="inst-name">{ic.instrument.replace('_', ' ')}</span>
+                    <div className="inst-bar">
+                      <div
+                        className="inst-fill"
+                        style={{ width: `${ic.weight * 100}%` }}
+                      />
+                    </div>
+                    <span className="inst-value">{Math.round(ic.weight * 100)}%</span>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {showHistory && chordHistory.length > 0 && (
@@ -939,24 +1215,29 @@ function ChordDetector({ chromagram, chromagramByOctave, showHistory, showDiagra
             </div>
           )}
 
-          {/* 4/4 Bar Grid */}
-          <div className="bar-grid">
-            {bars.map((bar, barIdx) => (
-              <div key={barIdx} className="bar">
-                <span className="bar-number">{bars.length - 8 + barIdx + 1}</span>
-                <div className="beats">
-                  {bar.map((beat, beatIdx) => (
-                    <div
-                      key={beatIdx}
-                      className={`beat ${beat ? 'has-chord' : 'empty'}`}
-                      style={{ backgroundColor: beat ? getChordColor(beat) : undefined }}
-                    >
-                      {beat || '-'}
-                    </div>
-                  ))}
+          {/* Bar Grid - 1 chord per bar */}
+          <div className="bar-grid compact">
+            {bars.map((bar, barIdx) => {
+              // Get dominant chord for this bar (most common, or first non-null)
+              const chordCounts = {};
+              bar.forEach(beat => {
+                if (beat) chordCounts[beat] = (chordCounts[beat] || 0) + 1;
+              });
+              const dominantChord = Object.entries(chordCounts)
+                .sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+
+              return (
+                <div key={barIdx} className="bar compact">
+                  <span className="bar-number">{barIdx + 1}</span>
+                  <div
+                    className={`bar-chord ${dominantChord ? 'has-chord' : 'empty'}`}
+                    style={{ backgroundColor: dominantChord ? getChordColor(dominantChord) : undefined }}
+                  >
+                    {dominantChord || '-'}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Recent Changes */}
@@ -977,15 +1258,26 @@ function ChordDetector({ chromagram, chromagramByOctave, showHistory, showDiagra
 
       {showDiagram && (
         <div className="chord-diagram" data-testid="chord-diagram">
-          <div className="diagram-content">
-            <h4>Circle of Fifths</h4>
-            {renderCircleOfFifths()}
-            {currentChord && (
+          <div className="dual-circles">
+            {/* Left: Harmonic Circle (Chords) */}
+            <div className="circle-container harmonic">
+              {renderHarmonicCircle()}
               <div className="circle-legend">
-                <span className="legend-active">● Active</span>
-                <span className="legend-related">● Related (IV, V, vi)</span>
+                <span className="legend-item" style={{ color: '#e94560' }}>● Chord Root</span>
+                <span className="legend-item" style={{ color: '#3b82f6' }}>● Related</span>
+                <span className="legend-item" style={{ color: '#a855f7' }}>● Minor</span>
               </div>
-            )}
+            </div>
+
+            {/* Right: Rhythmic Circle (Drums) */}
+            <div className="circle-container rhythmic">
+              {renderRhythmicCircle()}
+              <div className="circle-legend">
+                <span className="legend-item" style={{ color: DRUM_COLORS.kick }}>● Kick</span>
+                <span className="legend-item" style={{ color: DRUM_COLORS.snare }}>● Snare</span>
+                <span className="legend-item" style={{ color: DRUM_COLORS.hihat }}>● HiHat</span>
+              </div>
+            </div>
           </div>
         </div>
       )}

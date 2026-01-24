@@ -863,6 +863,8 @@ function App() {
             drumHits={effectiveDrumHits}
             currentTimeMs={currentTime * 1000}
             isPlaying={isPlaying}
+            // Advanced mode props
+            analyser={analyser}
           />
         </section>
 

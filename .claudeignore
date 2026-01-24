@@ -1,0 +1,98 @@
+# Claude Code Ignore File
+# Excludes files/folders from Claude's context to optimize token usage
+
+# Dependencies
+node_modules/
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Build outputs
+client/build/
+dist/
+*.min.js
+*.min.css
+*.bundle.js
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+*.temp
+
+# Cache directories
+.cache/
+.pytest_cache/
+.npm/
+
+# Large binary files
+*.mp3
+*.wav
+*.aif
+*.aiff
+*.flac
+*.ogg
+*.m4a
+*.mid
+*.midi
+
+# Images and media
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.ico
+*.webp
+*.pdf
+
+# Archives
+*.zip
+*.tar
+*.gz
+*.rar
+
+# Database and data files
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE and editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Test fixtures (binary audio)
+test-fixtures/*.mp3
+test-fixtures/*.wav
+
+# Backups (keep structure, exclude large dumps)
+backups/*.json
+backups/*.csv
+
+# Lock files (large, auto-generated)
+package-lock.json
+yarn.lock
+
+# Archives
+archive/
+
+# Environment files with secrets
+.env
+.env.local
+.env.production
+
+# Large auto-generated files
+client/src/reportWebVitals.js
+
+# Documentation we don't need to re-read often
+docs/TECHNICAL_REFERENCE.md
+docs/melodic-house.md

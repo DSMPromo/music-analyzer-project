@@ -56,7 +56,9 @@
       "rootCause": "Chord timestamps used Date.now() (wall clock) but grid used currentTimeMs (playback position). Different time bases caused offset.",
       "resolution": "Changed processFullMix to accept playbackTimeMs parameter and use it for chord timestamps.",
       "notes": [],
-      "relatedIncidents": ["INCIDENT-002"]
+      "relatedIncidents": [
+        "INCIDENT-002"
+      ]
     },
     {
       "id": "TICKET-004",
@@ -74,7 +76,9 @@
       "rootCause": "Local state not synced with props after re-render. Used defaultValue instead of controlled value.",
       "resolution": "Added useEffect to preserve user values, changed to controlled components, pass settings to callback.",
       "notes": [],
-      "relatedIncidents": ["INCIDENT-003"]
+      "relatedIncidents": [
+        "INCIDENT-003"
+      ]
     },
     {
       "id": "TICKET-005",
@@ -92,8 +96,33 @@
       "rootCause": "Sparse band extraction lost frequency resolution. Sample rate mismatch. Band separation too narrow.",
       "resolution": "Rewrote processFullMix with overlapping frequency bands and proper sample rate sync.",
       "notes": [],
-      "relatedIncidents": ["INCIDENT-001"]
+      "relatedIncidents": [
+        "INCIDENT-001"
+      ]
+    },
+    {
+      "id": "TICKET-006",
+      "title": "Test Ralph Integration",
+      "description": "Testing ticket creation from Ralph Loop script",
+      "priority": "Low",
+      "component": "General",
+      "status": "RESOLVED",
+      "created": "2026-01-24",
+      "updated": "2026-01-24",
+      "steps": "Auto-detected by Ralph Loop",
+      "expected": "Tests should pass",
+      "actual": "Tests failing",
+      "notes": [
+        {
+          "text": "Testing note addition from Ralph Loop",
+          "timestamp": "2026-01-24T06:23:50.011Z"
+        }
+      ],
+      "relatedIncidents": [],
+      "rootCause": "Test root cause",
+      "resolution": "Test resolution - Ralph Loop integration working",
+      "resolved": "2026-01-24"
     }
   ],
-  "nextId": 6
+  "nextId": 7
 }

@@ -11802,6 +11802,25 @@ button:disabled {
   border-top: 1px solid #333;
 }
 
+.settings-summary {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.75rem;
+  padding: 0.5rem;
+  background: rgba(59, 130, 246, 0.1);
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+
+.settings-summary .summary-item {
+  color: #888;
+}
+
+.settings-summary .summary-item.preset {
+  color: #3B82F6;
+  font-weight: 500;
+}
+
 /* Chord Timeline */
 .chord-timeline {
   margin-bottom: 1rem;

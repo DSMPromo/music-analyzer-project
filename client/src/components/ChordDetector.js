@@ -436,10 +436,16 @@ function ChordDetector({
     return { bar, beat };
   }, [tempo, beatsPerBar]);
 
-  // Current bar/beat position from playhead
+  // Current bar/beat position from playhead (calculated directly for accuracy)
   const currentBarBeat = useMemo(() => {
-    return getBarBeatFromTime(currentTimeMs || 0);
-  }, [currentTimeMs, getBarBeatFromTime]);
+    if (!tempo) return { bar: 0, beat: 0 };
+    const beatDurationMs = 60000 / tempo;
+    const barDurationMs = beatDurationMs * beatsPerBar;
+    const totalMs = currentTimeMs || 0;
+    const bar = Math.floor(totalMs / barDurationMs);
+    const beatInBar = Math.floor((totalMs % barDurationMs) / beatDurationMs);
+    return { bar, beat: beatInBar };
+  }, [currentTimeMs, tempo, beatsPerBar]);
 
   // Group consecutive same chords with proper timestamps
   const groupedChords = useMemo(() => {
@@ -473,24 +479,24 @@ function ChordDetector({
     return groups;
   }, [chordHistory]);
 
-  // Create bar structure based on tempo and timestamps
+  // Create bar structure based on tempo and absolute time (from 0)
   const bars = useMemo(() => {
-    if (!tempo || chordHistory.length === 0) return [];
+    if (!tempo) return [];
 
     const beatDurationMs = 60000 / tempo;
     const barDurationMs = beatDurationMs * beatsPerBar;
 
-    // Find time range from chord history
-    const firstTime = chordHistory[0]?.timestamp || 0;
-    const lastTime = chordHistory[chordHistory.length - 1]?.timestamp || firstTime;
+    // Calculate current bar from playhead position (absolute from song start)
+    const currentBar = Math.floor((currentTimeMs || 0) / barDurationMs);
 
-    // Calculate total bars needed (at least 1, cap at 16 for display)
-    const totalBars = Math.min(16, Math.max(1, Math.ceil((lastTime - firstTime) / barDurationMs) + 1));
+    // Calculate total bars to show (8 bars centered around current)
+    const startBar = Math.max(0, currentBar - 3);
+    const endBar = startBar + 8;
 
-    // Create bar array
+    // Create bar array from absolute time 0
     const barArray = [];
-    for (let barIdx = 0; barIdx < totalBars; barIdx++) {
-      const barStartMs = firstTime + (barIdx * barDurationMs);
+    for (let barIdx = startBar; barIdx < endBar; barIdx++) {
+      const barStartMs = barIdx * barDurationMs;
       const barEndMs = barStartMs + barDurationMs;
 
       // Find chords that fall within this bar
@@ -510,27 +516,20 @@ function ChordDetector({
         beats: barBeats,
         startMs: barStartMs,
         endMs: barEndMs,
-        barNumber: barIdx + 1
+        barNumber: barIdx + 1,
+        isCurrentBar: barIdx === currentBar
       });
     }
 
-    // Return bars around current playhead (show 8 bars centered on current)
-    const currentBar = currentBarBeat.bar;
-    const startBar = Math.max(0, currentBar - 3);
-    const endBar = Math.min(barArray.length, startBar + 8);
-
-    return barArray.slice(startBar, endBar).map((bar, idx) => ({
-      ...bar,
-      isCurrentBar: (startBar + idx) === currentBar,
-      displayIndex: startBar + idx
-    }));
-  }, [chordHistory, tempo, beatsPerBar, currentBarBeat.bar]);
+    return barArray;
+  }, [chordHistory, tempo, beatsPerBar, currentTimeMs]);
 
   // Calculate playhead position within current bar (0-100%)
   const playheadPosition = useMemo(() => {
-    if (!tempo || !currentTimeMs) return 0;
+    if (!tempo || currentTimeMs === undefined) return 0;
     const beatDurationMs = 60000 / tempo;
     const barDurationMs = beatDurationMs * beatsPerBar;
+    // Position within current bar
     const positionInBar = (currentTimeMs % barDurationMs) / barDurationMs;
     return positionInBar * 100;
   }, [tempo, currentTimeMs, beatsPerBar]);

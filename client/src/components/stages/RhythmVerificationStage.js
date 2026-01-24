@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { STAGE_STATUS, getSeverityColor, getStatusIcon, confidenceToWidth } from '../../utils/verificationUtils';
 import { GENRE_PRESETS } from '../../hooks/useRhythmAnalysis';
 
@@ -24,24 +24,54 @@ export function RhythmVerificationStage({
   isFindingQuietHits = false,
 }) {
   const [showSettings, setShowSettings] = useState(false);
+  const [selectedPreset, setSelectedPreset] = useState('');
   const [localThresholds, setLocalThresholds] = useState({
     energyThreshold: thresholds?.minEnergyThreshold || 0.1,
     hitInterval: thresholds?.minHitInterval || 40,
   });
 
+  // Keep local thresholds in sync with parent thresholds (preserve user values)
+  useEffect(() => {
+    // Only update if we don't have user-modified values
+    if (thresholds && !showSettings) {
+      setLocalThresholds(prev => ({
+        energyThreshold: prev.energyThreshold !== 0.1 ? prev.energyThreshold : (thresholds.minEnergyThreshold || 0.1),
+        hitInterval: prev.hitInterval !== 40 ? prev.hitInterval : (thresholds.minHitInterval || 40),
+      }));
+    }
+  }, [thresholds, showSettings]);
+
   const handleThresholdChange = useCallback((key, value) => {
     setLocalThresholds(prev => ({ ...prev, [key]: value }));
   }, []);
 
+  const handlePresetChange = useCallback((presetKey) => {
+    setSelectedPreset(presetKey);
+    const preset = GENRE_PRESETS[presetKey];
+    if (preset && preset.settings) {
+      // Apply preset settings to local thresholds
+      setLocalThresholds(prev => ({
+        ...prev,
+        energyThreshold: preset.settings.energyThreshold || prev.energyThreshold,
+        hitInterval: preset.settings.minHitInterval || prev.hitInterval,
+      }));
+    }
+  }, []);
+
   const handleApplySettings = useCallback(() => {
+    // Update parent thresholds with current local values
     if (onThresholdChange) {
       onThresholdChange('minEnergyThreshold', localThresholds.energyThreshold);
       onThresholdChange('minHitInterval', localThresholds.hitInterval);
+      if (selectedPreset) {
+        onThresholdChange('genrePreset', selectedPreset);
+      }
     }
+    // Re-analyze with new settings
     if (onReanalyze) {
-      onReanalyze();
+      onReanalyze(localThresholds);
     }
-  }, [onThresholdChange, onReanalyze, localThresholds]);
+  }, [onThresholdChange, onReanalyze, localThresholds, selectedPreset]);
 
   if (status === STAGE_STATUS.BLOCKED) {
     return (
@@ -228,14 +258,8 @@ export function RhythmVerificationStage({
                 <div className="setting-row">
                   <label>Genre Preset:</label>
                   <select
-                    onChange={(e) => {
-                      const preset = GENRE_PRESETS[e.target.value];
-                      if (preset) {
-                        // Apply preset would go here
-                        console.log('Apply preset:', e.target.value);
-                      }
-                    }}
-                    defaultValue=""
+                    value={selectedPreset}
+                    onChange={(e) => handlePresetChange(e.target.value)}
                   >
                     <option value="">Select preset...</option>
                     {Object.entries(GENRE_PRESETS).map(([key, preset]) => (
@@ -244,6 +268,13 @@ export function RhythmVerificationStage({
                       </option>
                     ))}
                   </select>
+                </div>
+
+                {/* Show current settings summary */}
+                <div className="settings-summary">
+                  <span className="summary-item">Energy: {localThresholds.energyThreshold.toFixed(2)}</span>
+                  <span className="summary-item">Interval: {localThresholds.hitInterval}ms</span>
+                  {selectedPreset && <span className="summary-item preset">Preset: {GENRE_PRESETS[selectedPreset]?.name}</span>}
                 </div>
 
                 <div className="settings-actions">

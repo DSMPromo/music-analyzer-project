@@ -128,6 +128,21 @@ All test scripts are in `scripts/testing/`:
 ./scripts/testing/test-adaptive-detection.sh /path/to/audio.wav
 ```
 
+### AI-Guided Detection
+```bash
+# Test AI-guided detection with free tier
+curl -X POST "http://localhost:56403/analyze-with-ai" \
+  -F "audio=@/path/to/audio.wav" \
+  -F "use_cache=true" \
+  -F "model_tier=free"
+
+# Check AI cache status
+curl "http://localhost:56403/ai-cache-status"
+
+# Clear AI cache
+curl -X DELETE "http://localhost:56403/ai-cache"
+```
+
 ### Generate Test Fixtures
 ```bash
 ./scripts/testing/generate-test-fixtures.sh
@@ -184,6 +199,22 @@ All backup scripts are in `scripts/backup/`:
 ```bash
 ./scripts/backup/verify-tickets.sh      # Check database integrity
 ```
+
+---
+
+## Claude Code Commands
+
+Essential commands for token optimization:
+
+| Command | Purpose |
+|---------|---------|
+| `/clear` | Reset context between tasks (saves 50-70% tokens) |
+| `/cost` | Check current token usage |
+| `/compact` | Summarize conversation to save tokens |
+| `/permissions` | Manage tool allowlist |
+| `#` key | Add instructions to CLAUDE.md during session |
+
+See [Claude Code Guide](claude-code-guide.md) for full best practices.
 
 ---
 

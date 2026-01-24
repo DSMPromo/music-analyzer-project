@@ -146,7 +146,9 @@ music-analyzer-project/
 │   └── SPECTROGRAM-GUIDE.md
 │
 ├── data/                          # Data files
-│   └── tickets.json
+│   ├── tickets.json               # Ticket database
+│   ├── spectrogram_cache/         # Cached spectrograms for AI analysis
+│   └── ai-cache/                  # AI analysis cache (30-day TTL)
 │
 ├── backups/                       # Backup storage
 ├── logs/                          # Log files
@@ -168,6 +170,7 @@ music-analyzer-project/
 │
 ├── package.json
 ├── package-lock.json
+├── .claudeignore                  # Files excluded from Claude Code context
 └── README.md
 ```
 
@@ -197,8 +200,26 @@ music-analyzer-project/
 | `testing/` | Feature test scripts | test-reverb.sh, test-instruments.sh |
 | `backup/` | Database backup | backup-tickets.sh, restore-tickets.sh |
 
+## Documentation Organization
+
+| File | Purpose |
+|------|---------|
+| `quick-reference.md` | Commands, scripts, startup |
+| `claude-code-guide.md` | Token optimization & AI best practices |
+| `file-structure.md` | This file - directory layout |
+| `services.md` | Backend API documentation |
+| `audio-processing.md` | Detection algorithms & pipelines |
+| `coding-standards.md` | Style guidelines & file size limits |
+| `chord-detector.md` | Chord detection features |
+| `ralph-loop.md` | Autonomous test fixing |
+
 ## Environment Setup
 - Node.js >= 18.0.0
 - Python 3.11+
 - FFmpeg for audio conversion
 - yt-dlp for YouTube download (optional)
+
+## Token Optimization
+- Keep files under 500 lines (15k tokens)
+- Use `.claudeignore` to exclude large files
+- See `claude-code-guide.md` for best practices

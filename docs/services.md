@@ -57,10 +57,12 @@ export OPENROUTER_API_KEY="your_openrouter_api_key"
 
 ### API Endpoints
 - `POST /analyze` - Analyze audio file (supports model, mode, session_id params)
+- `POST /analyze-for-detection` - Pattern analysis for rhythm detection configuration
 - `POST /chat` - Send follow-up message in existing session
 - `DELETE /chat/{session_id}` - Clear chat session
 - `GET /health` - Health check
 - `GET /models` - List available models
+- `GET /model-costs` - Get cost information for available models
 - `GET /settings` - Get current API settings
 - `POST /settings` - Update API settings (provider, API keys, default model)
 
@@ -88,8 +90,10 @@ pip install -r config/requirements-rhythm.txt
 
 ### Features
 - **4-stage pipeline**: HPSS -> Beat detection -> Onset detection -> Drum classification
+- **AI-Guided Detection**: Gemini 3 Pro analyzes spectrogram to configure detection thresholds
 - **HPSS Preprocessing**: Isolates percussive content from harmonic (bass, synths, vocals)
 - **Half-time BPM Correction**: Auto-doubles BPM when < 90 and interpolates beats
+- **16th Note Hi-Hat Detection**: Detects 16th note hi-hats (not just 8th notes)
 - librosa for beat/onset detection (madmom CNN when Python < 3.13)
 - Rule-based drum classification with 10 acoustic features
 - Swing detection and grid quantization
@@ -99,10 +103,12 @@ pip install -r config/requirements-rhythm.txt
 - **Extended instrument/vocal/Sound FX detection** (36 instrument types)
 - **Advanced processing**: Dynamic EQ, Compression, De-reverb
 - **Self-validation tests** for all detection features
+- **AI Analysis Caching**: SHA256-based caching with 30-day TTL to avoid burning credits
 
 ### API Endpoints
 - `POST /analyze-rhythm` - Full pipeline analysis
 - `POST /analyze-rhythm-ai` - Beat-aligned drum classification with HPSS
+- `POST /analyze-with-ai` - AI-guided detection using Gemini spectrogram analysis (with caching)
 - `POST /analyze-rhythm-steps` - Step-by-step verification analysis
 - `POST /apply-verified-hits` - Apply user-verified hits to grid
 - `POST /detect-beats` - BPM + beat times + downbeats only
@@ -114,6 +120,10 @@ pip install -r config/requirements-rhythm.txt
 - `POST /detect-instruments` - Extended instrument/vocal/FX detection
 - `POST /analyze-reverb-delay` - Reverb/delay analysis with RT60, stereo width, delay echoes
 - `POST /analyze-frequency-bands` - Frequency band analysis for AI tuning
+- `POST /detect-adaptive` - Spectrogram-guided adaptive detection for quiet sections
+- `GET /ai-cache-status` - Get AI analysis cache status and statistics
+- `DELETE /ai-cache/{cache_key}` - Delete specific AI cache entry
+- `DELETE /ai-cache` - Clear all AI cache entries
 - `GET /instrument-filters` - List all filter bands and categories
 - `GET /self-test` - Run all self-validation tests
 - `GET /validate-detection/{instrument}` - Test specific instrument detection
@@ -125,7 +135,7 @@ pip install -r config/requirements-rhythm.txt
 |------|----------------|-----------------|
 | Kick | 20-300 Hz | Extended to capture 808 harmonics and punch |
 | Snare | 150-2000 Hz | Snare body with mid presence |
-| Hi-Hat | 5000-16000 Hz | High frequencies for cymbals |
+| Hi-Hat | 5000-16000 Hz | **16th note detection** for modern 16th-note hi-hats |
 | Clap | 150-2000 Hz | Mid frequencies, high spectral flatness |
 | Tom | 80-500 Hz | Low-mids, longer decay |
 | Perc | Catch-all | Short transients, noise-like |
@@ -138,7 +148,20 @@ pip install -r config/requirements-rhythm.txt
 - Fix Grid button opens correction panel (BPM, downbeat, swing)
 - **Verify button** opens step-by-step verification panel
 - **Find Quiet Hits button** uses frequency filtering to detect quiet percussion
+- **AI-Guided Analysis**: `analyzeWithAI(file, {modelTier, useCache})` for Gemini-guided detection
 - Confidence-based opacity for detected hits
+
+### AI-Guided Detection Flow
+```
+Audio → Spectrogram → Gemini Analysis → Pattern Detection → Configure Thresholds → Detection
+                            ↓
+                     Cache (30-day TTL)
+```
+
+**Model Tiers:**
+- `free`: Gemini 2.0 Flash (no cost, good for testing)
+- `standard`: Gemini 2.5 Pro (balanced accuracy/cost)
+- `premium`: Gemini 3 Pro (best accuracy)
 
 ---
 

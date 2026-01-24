@@ -577,7 +577,52 @@
         }
       ],
       "relatedIncidents": ["TICKET-026"]
+    },
+    {
+      "id": "TICKET-028",
+      "title": "Half-Time BPM Correction Not Triggering Automatically",
+      "description": "BPM detection returns 86.1 (half-time) when actual BPM is 171. The half-time correction code exists but only triggers when user provides BPM. Need auto-correction based on confidence and genre characteristics.",
+      "priority": "High",
+      "component": "Rhythm Detection",
+      "status": "OPEN",
+      "created": "2026-01-24",
+      "updated": "2026-01-24",
+      "steps": "1. Load synth-pop/electronic track at ~171 BPM\n2. Run rhythm analysis without providing known BPM\n3. Observe BPM shows 86.1 (exactly half)",
+      "expected": "BPM should auto-correct to ~171 based on half-time detection heuristics",
+      "actual": "BPM shows 86.1 with 40% confidence, 50% error",
+      "rootCause": "The correct_half_time_beats() function only triggers when user provides expected_bpm parameter. Without user input, it doesn't know to double the detected BPM. Low confidence (40%) is a signal that librosa is uncertain, but this isn't used to trigger half-time correction.",
+      "resolution": null,
+      "notes": [
+        {
+          "text": "Detection metrics:\n- Detected BPM: 86.1\n- Actual BPM: 171\n- Confidence: 40%\n- Error: 50% (half-time)\n\nSuggested fixes:\n1. Auto-trigger half-time correction when: BPM < 95 AND confidence < 50%\n2. Analyze beat interval consistency - half-time detection shows alternating strong/weak beats\n3. Check for 'double-time feel' in hi-hat/snare patterns\n4. Use spectral flux to detect if energy peaks suggest faster tempo",
+          "timestamp": "2026-01-24T17:00:00.000Z"
+        }
+      ],
+      "relatedIncidents": ["TICKET-012"]
+    },
+    {
+      "id": "TICKET-029",
+      "title": "Developer Mode with Guidance Panel",
+      "description": "Add Developer Mode toggle to app header that shows guidance panel with analysis recommendations, issue detection, and suggested actions based on all detected data.",
+      "priority": "Medium",
+      "component": "UI/UX",
+      "status": "RESOLVED",
+      "created": "2026-01-24",
+      "updated": "2026-01-24",
+      "resolved": "2026-01-24",
+      "steps": "1. Click Dev Mode toggle in header\n2. Panel shows issues, warnings, recommendations\n3. Click action buttons to fix issues",
+      "expected": "Guidance panel helps users make correct decisions",
+      "actual": "Implemented as requested",
+      "rootCause": null,
+      "resolution": "Added DevModeGuidance component with:\n- Issue detection (half-time BPM, low confidence, service offline)\n- Warnings (low hit count, sparse detection)\n- Suggested actions (analyze, verify, find quiet hits)\n- Quick stats (BPM, confidence, hits, duration)\n- Test song loader for Blinding Lights\n- /api/load-local-file endpoint for loading test files",
+      "notes": [
+        {
+          "text": "Features:\n1. Toggle button in header (Dev Mode)\n2. Guidance panel analyzes all detected data\n3. Shows issues with severity (high/medium/low)\n4. Action buttons to fix common problems\n5. Quick load button for test song (Blinding Lights)",
+          "timestamp": "2026-01-24T17:30:00.000Z"
+        }
+      ],
+      "relatedIncidents": []
     }
   ],
-  "nextId": 28
+  "nextId": 30
 }

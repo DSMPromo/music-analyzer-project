@@ -1,0 +1,303 @@
+/* Developer Mode Guidance Panel */
+.dev-mode-guidance {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  border: 1px solid #0f3460;
+  border-radius: 8px;
+  margin: 10px;
+  overflow: hidden;
+  font-size: 13px;
+}
+
+.dmg-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 15px;
+  background: rgba(0, 0, 0, 0.3);
+  border-bottom: 1px solid #0f3460;
+}
+
+.dmg-icon {
+  font-size: 16px;
+}
+
+.dmg-title {
+  font-weight: 600;
+  color: #e94560;
+  flex: 1;
+}
+
+.dmg-badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.dmg-badge-error {
+  background: #e94560;
+  color: white;
+}
+
+.dmg-badge-warning {
+  background: #f39c12;
+  color: #1a1a2e;
+}
+
+.dmg-content {
+  padding: 10px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.dmg-section {
+  margin-bottom: 15px;
+}
+
+.dmg-section:last-child {
+  margin-bottom: 0;
+}
+
+.dmg-section h4 {
+  margin: 0 0 8px 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #888;
+}
+
+/* Issue/Warning Items */
+.dmg-item {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 8px;
+  border-left: 3px solid transparent;
+}
+
+.dmg-item-high {
+  border-left-color: #e94560;
+  background: rgba(233, 69, 96, 0.1);
+}
+
+.dmg-item-medium {
+  border-left-color: #f39c12;
+  background: rgba(243, 156, 18, 0.1);
+}
+
+.dmg-item-low {
+  border-left-color: #3498db;
+  background: rgba(52, 152, 219, 0.1);
+}
+
+.dmg-item-action {
+  border-left-color: #2ecc71;
+  background: rgba(46, 204, 113, 0.1);
+}
+
+.dmg-priority-high .dmg-action-btn-primary {
+  background: #2ecc71;
+}
+
+.dmg-item-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.dmg-item-icon {
+  font-size: 12px;
+}
+
+.dmg-item-title {
+  font-weight: 600;
+  color: #fff;
+}
+
+.dmg-item-message {
+  margin: 0 0 6px 0;
+  color: #ccc;
+  line-height: 1.4;
+}
+
+.dmg-item-suggestion {
+  margin: 0 0 8px 0;
+  color: #aaa;
+  font-size: 12px;
+  font-style: italic;
+}
+
+.dmg-action-btn {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.dmg-action-btn-primary {
+  background: #e94560;
+  color: white;
+}
+
+.dmg-action-btn-primary:hover {
+  background: #d63651;
+}
+
+.dmg-action-btn-secondary {
+  background: #3498db;
+  color: white;
+}
+
+.dmg-action-btn-secondary:hover {
+  background: #2980b9;
+}
+
+.dmg-action-btn:not(.dmg-action-btn-primary):not(.dmg-action-btn-secondary) {
+  background: #f39c12;
+  color: #1a1a2e;
+}
+
+/* Info Grid */
+.dmg-info-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dmg-info-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  border-left: 3px solid transparent;
+}
+
+.dmg-status-good {
+  border-left-color: #2ecc71;
+}
+
+.dmg-status-uncertain {
+  border-left-color: #f39c12;
+}
+
+.dmg-status-locked {
+  border-left-color: #9b59b6;
+}
+
+.dmg-info-label {
+  color: #888;
+  font-size: 11px;
+}
+
+.dmg-info-value {
+  color: #fff;
+  font-size: 12px;
+}
+
+/* Stats Grid */
+.dmg-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.dmg-stat {
+  text-align: center;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+}
+
+.dmg-stat-value {
+  display: block;
+  font-size: 18px;
+  font-weight: 700;
+  color: #e94560;
+}
+
+.dmg-stat-label {
+  display: block;
+  font-size: 10px;
+  color: #888;
+  text-transform: uppercase;
+  margin-top: 2px;
+}
+
+/* Scrollbar */
+.dmg-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.dmg-content::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.dmg-content::-webkit-scrollbar-thumb {
+  background: #0f3460;
+  border-radius: 3px;
+}
+
+/* Dev Mode Toggle Button */
+.dev-mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 2px solid #e94560;
+  border-radius: 20px;
+  background: transparent;
+  color: #e94560;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.dev-mode-toggle:hover {
+  background: rgba(233, 69, 96, 0.1);
+}
+
+.dev-mode-toggle.active {
+  background: #e94560;
+  color: white;
+}
+
+.dev-mode-toggle .toggle-icon {
+  font-size: 14px;
+}
+
+/* Test Song Loader */
+.test-song-loader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(46, 204, 113, 0.1);
+  border: 1px solid #2ecc71;
+  border-radius: 6px;
+  margin-top: 10px;
+}
+
+.test-song-loader span {
+  color: #2ecc71;
+  font-size: 12px;
+}
+
+.test-song-loader button {
+  padding: 4px 10px;
+  background: #2ecc71;
+  border: none;
+  border-radius: 4px;
+  color: white;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.test-song-loader button:hover {
+  background: #27ae60;
+}

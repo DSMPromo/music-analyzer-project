@@ -32,6 +32,7 @@ import RhythmVerificationPanel from './components/RhythmVerificationPanel';
 import { KnowledgeLab } from './components/knowledgelab';
 import PersonalKnowledge from './components/PersonalKnowledge';
 import TicketManager, { TicketBadge } from './components/TicketManager';
+import DevModeGuidance from './components/DevModeGuidance';
 
 function App() {
   const [audioFile, setAudioFile] = useState(null);
@@ -53,6 +54,10 @@ function App() {
 
   // Rhythm verification panel state
   const [showVerificationPanel, setShowVerificationPanel] = useState(false);
+
+  // Developer Mode state
+  const [devModeEnabled, setDevModeEnabled] = useState(false);
+  const [testSongPath] = useState('/Users/iggy/Am/01 Blinding Lights.aif');
 
   const audioRef = useRef(null);
   const sourceRef = useRef(null);
@@ -744,6 +749,26 @@ function App() {
     return () => clearInterval(interval);
   }, [showTicketManager]);
 
+  // Load test song for Developer Mode
+  const loadTestSong = async () => {
+    try {
+      // Use Electron/Node file system if available, otherwise use fetch
+      const response = await fetch(`http://localhost:56404/api/load-local-file?path=${encodeURIComponent(testSongPath)}`);
+      if (response.ok) {
+        const blob = await response.blob();
+        const fileName = testSongPath.split('/').pop();
+        const file = new File([blob], fileName, { type: 'audio/aiff' });
+        handleAudioSelect(file);
+      } else {
+        console.error('Could not load test song. Add /api/load-local-file endpoint or drag file manually.');
+        alert('Drag "01 Blinding Lights.aif" into the app to load test song');
+      }
+    } catch (err) {
+      console.error('Error loading test song:', err);
+      alert('Drag "01 Blinding Lights.aif" into the app to load test song');
+    }
+  };
+
   return (
     <div className="App">
       <header className="App-header">
@@ -753,6 +778,14 @@ function App() {
             <p>AI-powered music analysis with chord detection and MIDI generation</p>
           </div>
           <nav className="header-nav">
+            <button
+              className={`dev-mode-toggle ${devModeEnabled ? 'active' : ''}`}
+              onClick={() => setDevModeEnabled(!devModeEnabled)}
+              title="Developer Mode - Show guidance and recommendations"
+            >
+              <span className="toggle-icon">{devModeEnabled ? '🔧' : '⚙️'}</span>
+              Dev Mode
+            </button>
             <TicketBadge
               count={openTicketCount}
               onClick={() => setShowTicketManager(true)}
@@ -773,6 +806,48 @@ function App() {
         isOpen={showTicketManager}
         onClose={() => setShowTicketManager(false)}
       />
+
+      {/* Developer Mode Guidance Panel */}
+      {devModeEnabled && (
+        <DevModeGuidance
+          audioFile={audioFile}
+          duration={duration}
+          audioBuffer={audioBuffer}
+          bpm={effectiveTempo}
+          bpmConfidence={effectiveTempoConfidence}
+          bpmLocked={pythonBpmLocked}
+          bpmAutoCorrected={pythonBpmAutoCorrected}
+          beats={pythonBeats}
+          timeSignature={pythonTimeSignature}
+          swing={pythonSwing}
+          detectedGenre={rhythmDetectedGenre}
+          genreConfidence={rhythmGenreConfidence}
+          drumHits={effectiveDrumHits}
+          totalHitCount={Object.values(effectiveDrumHits || {}).reduce((sum, arr) => sum + (arr?.length || 0), 0)}
+          rhythmAnalysisState={rhythmAnalysisState}
+          isRhythmAnalyzing={isRhythmAnalyzing}
+          rhythmServiceAvailable={rhythmServiceAvailable}
+          detectedKey={detectedKey}
+          currentChord={appCurrentChord}
+          chordHistory={appChordHistory}
+          mixAnalysisResults={mixAnalysisResults}
+          onOpenFixGrid={openFixGrid}
+          onFindQuietHits={() => audioFile && findQuietHits(audioFile)}
+          onStartVerification={() => setShowVerificationPanel(true)}
+          onAnalyzeRhythm={() => audioFile && analyzeRhythmFile(audioFile)}
+          onRecalculateBPM={recalculateRhythmBPM}
+          onSetManualBPM={setRhythmManualBPM}
+        />
+      )}
+
+      {/* Test Song Loader (Dev Mode) */}
+      {devModeEnabled && !audioFile && (
+        <div className="test-song-loader">
+          <span>🎵 Quick Load:</span>
+          <button onClick={loadTestSong}>Load "Blinding Lights"</button>
+          <span style={{ color: '#888', fontSize: '11px' }}>or drag the file</span>
+        </div>
+      )}
 
       {/* Rhythm Verification Panel */}
       {showVerificationPanel && (

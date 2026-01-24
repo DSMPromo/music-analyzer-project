@@ -91,6 +91,46 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Load local file (for Developer Mode test songs)
+app.get('/api/load-local-file', (req, res) => {
+  const { path: filePath } = req.query;
+
+  if (!filePath) {
+    return res.status(400).json({ error: 'path parameter required' });
+  }
+
+  // Security: Only allow loading from specific directories
+  const allowedPaths = ['/Users/iggy/Am/', '/tmp/'];
+  const isAllowed = allowedPaths.some(allowed => filePath.startsWith(allowed));
+
+  if (!isAllowed) {
+    return res.status(403).json({ error: 'Access denied - path not in allowed directories' });
+  }
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+
+  // Get file extension for content type
+  const ext = path.extname(filePath).toLowerCase();
+  const contentTypes = {
+    '.aif': 'audio/aiff',
+    '.aiff': 'audio/aiff',
+    '.wav': 'audio/wav',
+    '.mp3': 'audio/mpeg',
+    '.m4a': 'audio/mp4',
+    '.flac': 'audio/flac',
+  };
+
+  const contentType = contentTypes[ext] || 'application/octet-stream';
+
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Disposition', `attachment; filename="${path.basename(filePath)}"`);
+
+  const stream = fs.createReadStream(filePath);
+  stream.pipe(res);
+});
+
 // ==================== TICKET API ====================
 
 // Get all tickets

@@ -398,6 +398,75 @@ The AI remembers your preferences and gives exact values based on your BPM.
 
 <br>
 
+### 35+ Built-in Presets
+
+<br>
+
+**Serum**
+| Preset | Type | Description |
+|--------|------|-------------|
+| Serum Bass | Bass | Modern wavetable bass |
+| Serum Supersaw | Lead | Massive unison lead |
+| Serum Pluck | Synth | Short percussive synth |
+| Serum Pad | Pad | Lush atmospheric pad |
+| Serum Growl | Bass | Aggressive dubstep bass |
+
+<br>
+
+**Massive**
+| Preset | Type | Description |
+|--------|------|-------------|
+| Massive Bass | Bass | Classic Reese bass |
+| Massive Lead | Lead | Cutting lead synth |
+| Massive Wobble | Bass | Classic dubstep wobble |
+| Massive Pluck | Synth | Punchy pluck synth |
+
+<br>
+
+**Sylenth1**
+| Preset | Type | Description |
+|--------|------|-------------|
+| Sylenth1 Lead | Lead | Classic trance lead |
+| Sylenth1 Supersaw | Lead | EDM supersaw stack |
+| Sylenth1 Bass | Bass | Punchy synth bass |
+| Sylenth1 Pluck | Synth | Bright pluck synth |
+| Sylenth1 Pad | Pad | Warm analog-style pad |
+
+<br>
+
+**More Synths**
+| Preset | Plugin | Description |
+|--------|--------|-------------|
+| Vital Modern Bass | Vital | Free Serum alternative |
+| Nexus EDM Lead | Nexus | Big room house lead |
+| Omnisphere Pad | Omnisphere | Cinematic texture |
+| Diva Analog Lead | Diva | Vintage analog emulation |
+| Phase Plant Texture | Phase Plant | Complex modular texture |
+| Pigments FM Bass | Pigments | FM synthesis bass |
+
+<br>
+
+**Hardware Emulations**
+| Preset | Emulates | Description |
+|--------|----------|-------------|
+| Juno-106 Pad | Roland Juno-106 | Classic 80s pad |
+| Minimoog Bass | Moog Minimoog | Classic analog bass |
+| DX7 E-Piano | Yamaha DX7 | Classic FM electric piano |
+| Prophet-5 Brass | Sequential Prophet-5 | Classic poly synth brass |
+
+<br>
+
+**Keys & Instruments**
+| Preset | Type | Description |
+|--------|------|-------------|
+| M1 Piano | Keys | Classic 80s/90s house piano |
+| Rhodes | Keys | Warm electric piano |
+| 808 Bass | Bass | Classic 808 with sustain |
+| Lead Vocal | Vocals | Modern pop/R&B vocal chain |
+| Acoustic Kit | Drums | Natural acoustic drums |
+
+<br>
+
 ---
 
 <br>

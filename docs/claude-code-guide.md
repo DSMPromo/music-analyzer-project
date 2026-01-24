@@ -4,6 +4,23 @@ Optimize your interactions with Claude Code for faster responses and lower token
 
 ---
 
+## Essential Commands
+
+| Command | Function |
+|---------|----------|
+| `/clear` | Reset context (use between unrelated tasks) |
+| `/cost` | Check current token usage |
+| `/compact` | Summarize conversation to save tokens |
+| `/permissions` | Manage tool allowlist |
+| `/init` | Auto-generate project CLAUDE.md |
+| `#` key | Add instructions to CLAUDE.md during session |
+| `Escape` | Interrupt Claude mid-execution |
+| `Double-Escape` | Jump back to edit previous prompts |
+
+**Pro tip**: Using `/clear` between tasks can cut token consumption by 50-70%.
+
+---
+
 ## Token Optimization
 
 ### File Size Limits
@@ -174,6 +191,104 @@ If you've already read a file in this conversation:
 
 ---
 
+## Efficient Workflows
+
+### Explore-Plan-Code-Commit
+
+The most token-efficient pattern for complex tasks:
+
+1. **Explore**: "Read the files in `rhythm/` - don't code yet"
+2. **Plan**: "Create a plan to add 16th note detection"
+3. **Code**: "Implement step 1 of the plan"
+4. **Commit**: "Commit these changes"
+
+### Test-Driven Development
+
+```
+1. Write test first → Clear success criteria
+2. Confirm test fails → Validates test
+3. Implement code → Focused iteration
+4. Run tests → Verify completion
+```
+
+Reduces iterations through clear targets.
+
+### Batch Your Requests
+
+**Good** (one request):
+```
+Update all panel components:
+1. Add dark mode support
+2. Fix the padding
+3. Update the header style
+```
+
+**Bad** (multiple round-trips):
+```
+"Add dark mode to LoudnessPanel"
+"Now add it to FrequencyPanel"
+"Also fix the padding"
+```
+
+Each round-trip has overhead - batch related changes.
+
+---
+
+## Advanced Strategies
+
+### Use Subagents for Research
+
+Deploy subagents (Task tool) to investigate without consuming main context:
+- "Use an explore agent to find where drums are classified"
+- Subagent does the research, returns summary
+- Main context stays focused on implementation
+
+### MCP Server Management
+
+Each enabled MCP server consumes context. Disable unused servers:
+```
+@server-name disable
+```
+Or use `/mcp` to manage servers.
+
+### Custom Slash Commands
+
+Create reusable commands in `.claude/commands/`:
+```markdown
+# .claude/commands/fix-ticket.md
+Fix ticket $ARGUMENTS:
+1. Read the ticket details
+2. Implement the fix
+3. Run tests
+4. Create commit
+```
+
+Use with: `/project:fix-ticket TICKET-044`
+
+### Headless Mode for Automation
+
+```bash
+# Single command
+claude -p "run tests and report failures"
+
+# Pipeline
+cat errors.log | claude -p "analyze these errors"
+
+# Batch processing
+for file in *.py; do
+  claude -p "add type hints to $file" --output-format json
+done
+```
+
+### Multi-Claude Workflows
+
+For large tasks, use separate instances:
+- **Claude 1**: Write code
+- **Claude 2**: Review and verify
+- Use git worktrees for parallel work
+
+---
+
 ## Common Patterns
 
 ### Adding a New Component
@@ -277,6 +392,14 @@ grep -r "from '.*ComponentName'" client/src/
 | Readable | 25k tokens |
 | Ideal | 15k tokens |
 | Split at | 1000+ lines |
+
+---
+
+## Resources
+
+- [Anthropic: Claude Code Best Practices](https://www.anthropic.com/engineering/claude-code-best-practices)
+- [Claude Code Docs: Manage Costs](https://code.claude.com/docs/en/costs)
+- [ClaudeLog: Token Optimization Guide](https://claudelog.com/faqs/how-to-optimize-claude-code-token-usage/)
 
 ---
 

@@ -65,8 +65,30 @@ export function useAudioAnalyzer() {
 
       setProgress(20);
 
-      // Decode audio data
-      const decodedBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
+      // Decode audio data (with automatic conversion for unsupported formats)
+      let decodedBuffer;
+      try {
+        decodedBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer.slice(0));
+      } catch (decodeError) {
+        // Browser can't decode - try server-side conversion
+        const { convertToWav, needsConversion } = await import('../utils/audioConversion');
+
+        if (needsConversion(audioFile)) {
+          console.log('Browser cannot decode, trying server-side conversion...');
+          try {
+            const result = await convertToWav(audioFile);
+            const wavArrayBuffer = await result.file.arrayBuffer();
+            decodedBuffer = await audioContextRef.current.decodeAudioData(wavArrayBuffer);
+            console.log('Server-side conversion successful');
+          } catch (conversionError) {
+            console.error('Server conversion failed:', conversionError);
+            const ext = audioFile.name.split('.').pop().toUpperCase();
+            throw new Error(`Could not convert ${ext} file. Make sure the backend server is running (node server.js) and FFmpeg is installed.`);
+          }
+        } else {
+          throw new Error(`Unable to decode audio data. The file may be corrupted or use an unsupported codec.`);
+        }
+      }
 
       // Store audioBuffer for spectrogram generation
       setAudioBuffer(decodedBuffer);

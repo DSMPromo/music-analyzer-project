@@ -1,9 +1,9 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import AnalysisDashboard from '../../components/AnalysisDashboard';
+import AnalysisDashboard from '../../components/analysis/AnalysisDashboard';
 
 // Mock child components
-jest.mock('../../components/AudioInputManager', () => {
+jest.mock('../../components/audio/AudioInputManager', () => {
   return function MockAudioInputManager({ onAudioReady }) {
     return (
       <div data-testid="audio-input-manager">
@@ -13,19 +13,19 @@ jest.mock('../../components/AudioInputManager', () => {
   };
 });
 
-jest.mock('../../components/SpectrumAnalyzer', () => {
+jest.mock('../../components/spectrogram/SpectrumAnalyzer', () => {
   return function MockSpectrumAnalyzer() {
     return <div data-testid="spectrum-analyzer">Spectrum Analyzer</div>;
   };
 });
 
-jest.mock('../../components/ChordDetector', () => {
+jest.mock('../../components/chord/ChordDetector', () => {
   return function MockChordDetector() {
     return <div data-testid="chord-detector">Chord Detector</div>;
   };
 });
 
-jest.mock('../../components/MIDIGenerator', () => {
+jest.mock('../../components/midi/MIDIGenerator', () => {
   return function MockMIDIGenerator() {
     return <div data-testid="midi-generator">MIDI Generator</div>;
   };

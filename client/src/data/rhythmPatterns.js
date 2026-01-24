@@ -248,7 +248,7 @@ export const SOUND_FX_TYPES = {
     types: ['swoosh', 'tape_stop', 'stutter', 'vocal_chop'],
     description: 'Connective elements between sections',
     frequencyRange: '50-8000Hz',
-    detectSettings: { energyMultiplier: 0.5, useDereverb: true }
+    detectSettings: { energyMultiplier: 0.3, useDereverb: true }  // Factory default
   }
 };
 

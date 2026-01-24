@@ -107,6 +107,49 @@ export const ANALYSIS_STATES = {
 };
 
 /**
+ * Auto-correct BPM to typical range (90-180)
+ * - If BPM < 90: double it (half-time detection)
+ * - If BPM > 180: halve it (double-time detection)
+ *
+ * Common half-time detections:
+ * - Blinding Lights: 86 BPM detected → should be 172 BPM (true: 171)
+ * - Most pop/EDM: 60-89 detected → should be 120-178
+ *
+ * Normal range (90-180) includes:
+ * - House/techno: 120-130
+ * - Pop: 100-130
+ * - DNB/fast EDM: 170-180
+ *
+ * Returns { bpm, wasAutoCorrected, correction }
+ */
+export function normalizeBpm(rawBpm) {
+  if (!rawBpm || rawBpm <= 0) return { bpm: rawBpm, wasAutoCorrected: false, correction: null };
+
+  let correctedBpm = rawBpm;
+  let correction = null;
+
+  // Half-time detection: BPM too slow, double it
+  // Threshold 90 catches songs like Blinding Lights (detected as 86)
+  if (rawBpm < 90) {
+    correctedBpm = rawBpm * 2;
+    correction = 'doubled';
+  }
+  // Double-time detection: BPM too fast, halve it
+  // Threshold 180 to allow fast DNB/EDM (up to 180)
+  else if (rawBpm > 180) {
+    correctedBpm = rawBpm / 2;
+    correction = 'halved';
+  }
+
+  return {
+    bpm: Math.round(correctedBpm * 10) / 10, // Round to 1 decimal
+    wasAutoCorrected: correction !== null,
+    correction,
+    originalBpm: rawBpm,
+  };
+}
+
+/**
  * Hook for Python-based rhythm analysis.
  * Orchestrates the 3-stage pipeline: beats → onsets → classify
  *
@@ -128,6 +171,7 @@ export function useRhythmAnalysis() {
   const [bpm, setBpm] = useState(null);
   const [bpmConfidence, setBpmConfidence] = useState(0);
   const [bpmLocked, setBpmLocked] = useState(false);
+  const [bpmAutoCorrected, setBpmAutoCorrected] = useState(null); // { correction, originalBpm }
   const [beats, setBeats] = useState([]);
   const [downbeats, setDownbeats] = useState([]);
   const [timeSignature, setTimeSignature] = useState(4);
@@ -227,8 +271,13 @@ export function useRhythmAnalysis() {
       setAnalysisProgress(80);
       setAnalysisState(ANALYSIS_STATES.CLASSIFYING_HITS);
 
-      // Update state with results
-      setBpm(result.bpm);
+      // Update state with results - auto-correct BPM if needed
+      const normalized = normalizeBpm(result.bpm);
+      setBpm(normalized.bpm);
+      setBpmAutoCorrected(normalized.wasAutoCorrected ? {
+        correction: normalized.correction,
+        originalBpm: normalized.originalBpm,
+      } : null);
       setBpmConfidence(result.bpm_confidence);
       setBeats(result.beats);
       setDownbeats(result.downbeats);
@@ -292,7 +341,13 @@ export function useRhythmAnalysis() {
       setAnalysisState(ANALYSIS_STATES.ANALYZING_BEATS);
       const result = await detectBeats(currentFileRef.current);
 
-      setBpm(result.bpm);
+      // Auto-correct BPM if needed
+      const normalized = normalizeBpm(result.bpm);
+      setBpm(normalized.bpm);
+      setBpmAutoCorrected(normalized.wasAutoCorrected ? {
+        correction: normalized.correction,
+        originalBpm: normalized.originalBpm,
+      } : null);
       setBpmConfidence(result.bpm_confidence);
       setBeats(result.beats);
       setDownbeats(result.downbeats);
@@ -312,6 +367,7 @@ export function useRhythmAnalysis() {
   const setManualBPM = useCallback((newBpm) => {
     setBpm(newBpm);
     setBpmLocked(true);
+    setBpmAutoCorrected(null); // Clear auto-correction flag on manual edit
     setBpmConfidence(1.0); // Manual = 100% confidence
   }, []);
 
@@ -722,8 +778,8 @@ export function useRhythmAnalysis() {
         {
           downbeatOffset,
           timeSignature,
-          startBar: options.startBar || null,
-          energyMultiplier: options.energyMultiplier || 0.5,
+          startBar: options.startBar || 1,  // Factory default: start from bar 1
+          energyMultiplier: options.energyMultiplier || 0.3,  // Factory default: high sensitivity
         }
       );
 
@@ -774,7 +830,13 @@ export function useRhythmAnalysis() {
   const resetToDetected = useCallback(() => {
     if (!rawResult) return;
 
-    setBpm(rawResult.bpm);
+    // Re-apply auto-correction on reset
+    const normalized = normalizeBpm(rawResult.bpm);
+    setBpm(normalized.bpm);
+    setBpmAutoCorrected(normalized.wasAutoCorrected ? {
+      correction: normalized.correction,
+      originalBpm: normalized.originalBpm,
+    } : null);
     setBpmConfidence(rawResult.bpm_confidence);
     setBpmLocked(false);
     setDownbeats(rawResult.downbeats);
@@ -795,6 +857,7 @@ export function useRhythmAnalysis() {
     setBpm(null);
     setBpmConfidence(0);
     setBpmLocked(false);
+    setBpmAutoCorrected(null);
     setBeats([]);
     setDownbeats([]);
     setTimeSignature(4);
@@ -846,6 +909,7 @@ export function useRhythmAnalysis() {
     bpm,
     bpmConfidence,
     bpmLocked,
+    bpmAutoCorrected, // { correction: 'doubled'|'halved', originalBpm }
     beats,
     downbeats,
     timeSignature,

@@ -1,19 +1,40 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import './App.css';
-import AudioInputManager from './components/AudioInputManager';
-import SpectrumAnalyzer from './components/SpectrumAnalyzer';
-import ChordDetector from './components/ChordDetector';
-import MIDIGenerator from './components/MIDIGenerator';
-import AudioAnalyzer from './components/AudioAnalyzer';
-import SpectrogramView from './components/SpectrogramView';
-import MixAnalysisPanel from './components/MixAnalysisPanel';
-import LoudnessTimeline from './components/LoudnessTimeline';
-import ReferenceCompare from './components/ReferenceCompare';
-import GeminiMixAnalyzer from './components/GeminiMixAnalyzer';
-import StemSeparator from './components/StemSeparator';
-import AnalysisHistory from './components/AnalysisHistory';
-import AudioOptimizer from './components/AudioOptimizer';
-import VerificationController from './components/VerificationController';
+// Audio components
+import AudioInputManager from './components/audio/AudioInputManager';
+import AudioOptimizer from './components/audio/AudioOptimizer';
+// Spectrogram components
+import SpectrumAnalyzer from './components/spectrogram/SpectrumAnalyzer';
+import SpectrogramView from './components/spectrogram/SpectrogramView';
+// Analysis components
+import AudioAnalyzer from './components/analysis/AudioAnalyzer';
+import AnalysisHistory from './components/analysis/AnalysisHistory';
+// Mix components
+import MixAnalysisPanel from './components/mix/MixAnalysisPanel';
+import LoudnessTimeline from './components/mix/LoudnessTimeline';
+import ReferenceCompare from './components/mix/ReferenceCompare';
+import GeminiMixAnalyzer from './components/mix/GeminiMixAnalyzer';
+// Chord components
+import ChordDetector from './components/chord/ChordDetector';
+// MIDI components
+import MIDIGenerator from './components/midi/MIDIGenerator';
+// Stem components
+import StemSeparator from './components/stem/StemSeparator';
+// Rhythm components
+import FixGridPanel from './components/rhythm/FixGridPanel';
+import RhythmGrid from './components/rhythm/RhythmGrid';
+import RhythmGridPro from './components/rhythm/RhythmGridPro';
+import RhythmVerificationPanel from './components/rhythm/RhythmVerificationPanel';
+// Verification components
+import VerificationController from './components/verification/VerificationController';
+// Knowledge components
+import { KnowledgeLab } from './components/knowledge';
+import PersonalKnowledge from './components/knowledge/PersonalKnowledge';
+// Ticket components
+import TicketManager, { TicketBadge } from './components/ticket/TicketManager';
+// Shared components
+import DevModeGuidance from './components/shared/DevModeGuidance';
+// Hooks
 import { useAudioContext } from './hooks/useAudioContext';
 import { useFFTAnalysis } from './hooks/useFFTAnalysis';
 import { useSpectrogramGenerator } from './hooks/useSpectrogramGenerator';
@@ -23,16 +44,9 @@ import { useRhythmAnalysis, ANALYSIS_STATES } from './hooks/useRhythmAnalysis';
 import { useAnalysisCache } from './hooks/useAnalysisCache';
 import { useChordDetection } from './hooks/useChordDetection';
 import { useVerificationWorkflow } from './hooks/useVerificationWorkflow';
+// Utils
 import { generateFileFingerprint } from './utils/analysisCache';
 import { STAGES, STAGE_STATUS } from './utils/verificationUtils';
-import FixGridPanel from './components/FixGridPanel';
-import RhythmGrid from './components/RhythmGrid';
-import RhythmGridPro from './components/RhythmGridPro';
-import RhythmVerificationPanel from './components/RhythmVerificationPanel';
-import { KnowledgeLab } from './components/knowledgelab';
-import PersonalKnowledge from './components/PersonalKnowledge';
-import TicketManager, { TicketBadge } from './components/TicketManager';
-import DevModeGuidance from './components/DevModeGuidance';
 
 function App() {
   const [audioFile, setAudioFile] = useState(null);

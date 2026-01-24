@@ -458,7 +458,98 @@ def detect_beats(audio_path: str, y: np.ndarray, sr: int) -> Tuple[BeatResult, s
             logger.warning(f'madmom beat detection failed: {e}, falling back to librosa')
 
     result = detect_beats_librosa(y, sr)
+
+    # Apply spectral-based half-time correction
+    result = correct_half_time_spectral(y, sr, result)
+
     return result, method
+
+
+def correct_half_time_spectral(y: np.ndarray, sr: int, beat_result: BeatResult) -> BeatResult:
+    """
+    Use spectral analysis to detect and correct half-time BPM.
+
+    Analyzes hi-hat frequency band transient density - if there are
+    significantly more transients than expected for the detected BPM,
+    the tempo is likely half-time and should be doubled.
+    """
+    detected_bpm = beat_result.bpm
+    confidence = beat_result.bpm_confidence
+
+    # Only apply correction for low confidence, low BPM detections
+    if detected_bpm >= 100 or confidence > 0.7:
+        logger.info(f'Spectral half-time check: BPM {detected_bpm:.1f} @ {confidence:.0%} confidence - no correction needed')
+        return beat_result
+
+    try:
+        from scipy.signal import butter, sosfilt
+
+        # Bandpass filter for hi-hat frequencies (5-15kHz)
+        nyq = sr / 2
+        low = min(5000 / nyq, 0.9)
+        high = min(15000 / nyq, 0.99)
+
+        if low >= high:
+            return beat_result
+
+        sos = butter(4, [low, high], btype='band', output='sos')
+        y_hihat = sosfilt(sos, y)
+
+        # Detect onsets in hi-hat band
+        hihat_onsets = librosa.onset.onset_detect(
+            y=y_hihat, sr=sr,
+            backtrack=False,
+            delta=0.1  # Lower threshold to catch more transients
+        )
+        hihat_times = librosa.frames_to_time(hihat_onsets, sr=sr)
+
+        # Calculate expected vs actual transient density
+        duration = len(y) / sr
+        bar_duration = 60 / detected_bpm * 4  # 4 beats per bar
+        num_bars = duration / bar_duration
+
+        # Typical hi-hat plays 8 times per bar (8th notes)
+        expected_transients_per_bar = 8
+        expected_total = num_bars * expected_transients_per_bar
+        actual_total = len(hihat_times)
+
+        density_ratio = actual_total / (expected_total + 1)
+
+        logger.info(f'Spectral half-time check: detected {actual_total} hi-hat transients, expected {expected_total:.0f} (ratio: {density_ratio:.2f})')
+
+        # If we detect 1.5x or more transients than expected, it's likely half-time
+        if density_ratio > 1.5:
+            corrected_bpm = detected_bpm * 2
+            logger.info(f'HALF-TIME DETECTED via spectral analysis: {detected_bpm:.1f} -> {corrected_bpm:.1f} BPM')
+
+            # Interpolate beats
+            old_beats = beat_result.beats
+            new_beats = []
+            for i in range(len(old_beats) - 1):
+                new_beats.append(old_beats[i])
+                new_beats.append((old_beats[i] + old_beats[i + 1]) / 2)  # midpoint
+            if old_beats:
+                new_beats.append(old_beats[-1])
+
+            # Update downbeats
+            new_downbeats = [
+                {'time': float(new_beats[i]), 'beat_position': (i % 4) + 1}
+                for i in range(len(new_beats))
+            ]
+
+            return BeatResult(
+                bpm=corrected_bpm,
+                bpm_confidence=min(confidence * 1.2, 0.85),  # Boost confidence slightly
+                beats=new_beats,
+                downbeats=new_downbeats,
+                time_signature=beat_result.time_signature
+            )
+
+        return beat_result
+
+    except Exception as e:
+        logger.warning(f'Spectral half-time correction failed: {e}')
+        return beat_result
 
 
 # =============================================================================

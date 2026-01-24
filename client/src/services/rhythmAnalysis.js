@@ -406,15 +406,15 @@ export function flattenHits(hitsObj) {
  * @param {number} options.downbeatOffset - Time of first downbeat (default 0)
  * @param {number} options.timeSignature - Beats per bar (default 4)
  * @param {number} options.startBar - Start scanning from this bar (optional)
- * @param {number} options.energyMultiplier - Lower = more sensitive (default 0.5)
+ * @param {number} options.energyMultiplier - Lower = more sensitive (default 0.3)
  * @returns {Promise<Object>} Predicted quiet hits and analysis
  */
 export async function predictQuietHits(audioFile, existingHits, bpm, audioDuration, options = {}) {
   const {
     downbeatOffset = 0,
     timeSignature = 4,
-    startBar = null,
-    energyMultiplier = 0.5,
+    startBar = 1,  // Start from bar 1 by default
+    energyMultiplier = 0.3,  // Factory default: high sensitivity
   } = options;
 
   // Convert if needed (AIFF, etc.)
@@ -490,11 +490,130 @@ export function formatQuietHitsForGrid(quietHitsResult, bpm, beatsPerBar = 4) {
   return hits;
 }
 
+/**
+ * Step-by-step rhythm analysis with adjustable sensitivity.
+ * Returns intermediate results for verification UI.
+ *
+ * @param {File|Blob} audioFile - The audio file to analyze
+ * @param {Object} sensitivities - Per-instrument sensitivity (0.0 = sensitive, 1.0 = strict)
+ * @returns {Promise<Object>} Step-by-step analysis result with per-drum hits
+ */
+export async function analyzeRhythmSteps(audioFile, sensitivities = {}) {
+  const {
+    kick = 0.5,
+    snare = 0.5,
+    hihat = 0.5,
+    clap = 0.5,
+  } = sensitivities;
+
+  // Convert if needed (AIFF, etc.)
+  const compatibleFile = await ensureCompatibleFormat(audioFile);
+
+  const formData = new FormData();
+  formData.append('audio', compatibleFile, compatibleFile.name || 'audio.wav');
+  formData.append('kick_sensitivity', kick.toString());
+  formData.append('snare_sensitivity', snare.toString());
+  formData.append('hihat_sensitivity', hihat.toString());
+  formData.append('clap_sensitivity', clap.toString());
+
+  const response = await fetch(`${RHYTHM_API_URL}/analyze-rhythm-steps`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Step-by-step analysis failed');
+  }
+
+  return response.json();
+}
+
+/**
+ * Apply user-verified hits after review.
+ *
+ * @param {Object[]} verifiedHits - Array of verified hits
+ * @param {number} bpm - Tempo
+ * @param {number} timeSignature - Time signature
+ * @returns {Promise<Object>} Final hits with swing/genre detection
+ */
+export async function applyVerifiedHits(verifiedHits, bpm, timeSignature = 4) {
+  const response = await fetch(`${RHYTHM_API_URL}/apply-verified-hits`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      hits: JSON.stringify(verifiedHits),
+      bpm: bpm.toString(),
+      time_signature: timeSignature.toString(),
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to apply verified hits');
+  }
+
+  return response.json();
+}
+
+/**
+ * Format step-by-step results for grid display
+ */
+export function formatStepResultsForGrid(stepResult, bpm, beatsPerBar = 4) {
+  const hits = {
+    kick: [],
+    snare: [],
+    hihat: [],
+    clap: [],
+    tom: [],
+    perc: [],
+  };
+
+  if (!stepResult.steps) return hits;
+
+  const beatDuration = 60 / bpm;
+  const downbeatTime = stepResult.downbeats?.[0]?.time || 0;
+
+  for (const step of stepResult.steps) {
+    if (!step.drum_type || !step.hits) continue;
+
+    const drumType = step.drum_type;
+    if (!hits[drumType]) continue;
+
+    for (const hit of step.hits) {
+      const relativeTime = hit.time - downbeatTime;
+      const totalBeats = relativeTime / beatDuration;
+      const bar = Math.floor(totalBeats / beatsPerBar);
+      const beatInBar = Math.floor(totalBeats % beatsPerBar);
+      const subbeat = Math.round((totalBeats % 1) * 4);
+
+      hits[drumType].push({
+        timestamp: hit.time * 1000,
+        confidence: hit.confidence,
+        energy: hit.energy,
+        bar,
+        beat: beatInBar,
+        subbeat,
+        isManual: false,
+        isPythonAnalysis: true,
+        isVerified: false,
+      });
+    }
+  }
+
+  return hits;
+}
+
 // Export service object for convenience
 export const rhythmAnalysisService = {
   checkHealth: checkRhythmServiceHealth,
   getAvailableMethods,
   analyzeRhythm,
+  analyzeRhythmSteps,
+  applyVerifiedHits,
+  formatStepResultsForGrid,
   detectBeats,
   classifyHits,
   quantizeToGrid,

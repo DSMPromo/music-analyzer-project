@@ -1,13 +1,132 @@
 /**
- * Mix Analysis Utilities
- * Problem frequency detection, masking analysis, loudness calculation
- * for professional mix/master analysis
+ * @module mixAnalysisUtils
+ * @description Mix Analysis Utilities for professional audio engineering
+ *
+ * Provides algorithms for detecting common mixing problems including:
+ * - Problem frequency detection (muddy, boxy, harsh, sibilant regions)
+ * - Frequency masking detection (competing frequency bands)
+ * - Resonance detection (sustained narrow peaks)
+ * - Loudness analysis (LUFS, dynamic range)
+ * - Reference track comparison with EQ recommendations
+ *
+ * ## Features
+ * - Automatic problem frequency zone detection
+ * - Frequency masking/crowding analysis
+ * - Resonant peak identification
+ * - Segment-based LUFS loudness metering
+ * - A/B reference track comparison
+ * - Mix improvement recommendations
+ *
+ * ## Usage
+ * ```javascript
+ * import {
+ *   detectProblemFrequencies,
+ *   detectFrequencyMasking,
+ *   calculateSegmentLUFS,
+ *   compareToReference
+ * } from './mixAnalysisUtils';
+ *
+ * const problems = detectProblemFrequencies(spectrogramData);
+ * const masking = detectFrequencyMasking(spectrogramData);
+ * const loudness = calculateSegmentLUFS(audioBuffer, 1);
+ * ```
+ *
+ * @author Music Analyzer Team
+ * @version 1.0.0
+ */
+
+// ============================================
+// TYPE DEFINITIONS
+// ============================================
+
+/**
+ * @typedef {Object} ProblemZone
+ * @property {string} name - Human-readable zone name
+ * @property {string} description - Description of the problem
+ * @property {number} lowFreq - Lower frequency bound in Hz
+ * @property {number} highFreq - Upper frequency bound in Hz
+ * @property {number} threshold - dB threshold above average
+ * @property {'mild'|'moderate'|'severe'} severity - Default severity level
+ */
+
+/**
+ * @typedef {Object} DetectedProblem
+ * @property {string} type - Problem zone key (e.g., 'muddy', 'harsh')
+ * @property {string} name - Human-readable problem name
+ * @property {string} description - Problem description
+ * @property {'mild'|'moderate'|'severe'} severity - Problem severity
+ * @property {number} startTime - Start time in seconds
+ * @property {number} endTime - End time in seconds
+ * @property {number} frequency - Peak frequency in Hz
+ * @property {number[]} frequencyRange - [lowFreq, highFreq] range
+ * @property {number} peakDb - Peak dB value
+ * @property {number} excessDb - dB above average
+ */
+
+/**
+ * @typedef {Object} MaskingRegion
+ * @property {number} time - Time position in seconds
+ * @property {string[]} bands - Names of competing frequency bands
+ * @property {number[]} frequencyRange - [lowFreq, highFreq] range
+ * @property {'moderate'|'severe'} severity - Masking severity
+ * @property {string} description - Description of the masking issue
+ */
+
+/**
+ * @typedef {Object} Resonance
+ * @property {number} frequency - Resonant frequency in Hz
+ * @property {number} peakDb - Peak dB level
+ * @property {number} excessDb - dB above neighbors
+ * @property {'mild'|'moderate'|'severe'} severity - Resonance severity
+ * @property {string} description - Description of the resonance
+ */
+
+/**
+ * @typedef {Object} LoudnessSegment
+ * @property {number} startTime - Segment start time in seconds
+ * @property {number} endTime - Segment end time in seconds
+ * @property {number} lufs - LUFS value for segment
+ * @property {number} rms - RMS value
+ * @property {'good'|'warm'|'hot'|'quiet'} [status] - Loudness status
+ */
+
+/**
+ * @typedef {Object} LoudnessAnalysis
+ * @property {number} integratedLUFS - Average LUFS across all segments
+ * @property {number} maxLUFS - Maximum LUFS value
+ * @property {number} minLUFS - Minimum LUFS value (excluding silence)
+ * @property {number} dynamicRange - Dynamic range in dB
+ * @property {number} loudestMoment - Time of loudest moment
+ * @property {number} quietestMoment - Time of quietest moment
+ * @property {LoudnessSegment[]} segments - Classified segments
+ */
+
+/**
+ * @typedef {Object} BandComparison
+ * @property {string} name - Band name
+ * @property {number[]} frequencyRange - [lowFreq, highFreq]
+ * @property {number} mainDb - Main track energy in dB
+ * @property {number} referenceDb - Reference track energy in dB
+ * @property {number} difference - Difference in dB
+ * @property {'matched'|'louder'|'quieter'} status - Comparison status
+ */
+
+/**
+ * @typedef {Object} ComparisonResult
+ * @property {BandComparison[]} bandComparison - Per-band comparison
+ * @property {number} overallDifference - Average absolute difference
+ * @property {Object[]} recommendations - EQ recommendations
  */
 
 // ============================================
 // PROBLEM FREQUENCY ZONES
 // ============================================
 
+/**
+ * Problem frequency zones with detection thresholds
+ * Each zone defines a frequency range and threshold for detecting issues
+ * @constant {Object.<string, ProblemZone>}
+ */
 export const PROBLEM_ZONES = {
   subRumble: {
     name: 'Sub Rumble',
@@ -206,6 +325,10 @@ export function detectProblemFrequencies(spectrogramData) {
 
 /**
  * Merge adjacent problems of the same type
+ * Combines problems that are within 0.5 seconds of each other
+ * @private
+ * @param {DetectedProblem[]} problems - Array of detected problems
+ * @returns {DetectedProblem[]} Merged problems array
  */
 function mergeAdjacentProblems(problems) {
   const sorted = [...problems].sort((a, b) => {
@@ -316,6 +439,10 @@ export function detectFrequencyMasking(spectrogramData) {
 
 /**
  * Consolidate nearby masking regions
+ * Merges masking regions of the same band combination within 1 second
+ * @private
+ * @param {MaskingRegion[]} regions - Array of masking regions
+ * @returns {MaskingRegion[]} Consolidated regions (minimum 1 second duration)
  */
 function consolidateMaskingRegions(regions) {
   if (regions.length === 0) return [];
@@ -405,6 +532,10 @@ export function detectResonances(spectrogramData) {
 
 /**
  * Filter out resonances that are too close together
+ * Keeps the strongest resonance when multiple are within 10% frequency
+ * @private
+ * @param {Resonance[]} resonances - Array of detected resonances
+ * @returns {Resonance[]} Filtered resonances sorted by frequency
  */
 function filterCloseResonances(resonances) {
   const sorted = [...resonances].sort((a, b) => b.excessDb - a.excessDb);
@@ -593,6 +724,10 @@ export function compareToReference(mainSpectrogram, referenceSpectrogram) {
 
 /**
  * Calculate average spectrum from spectrogram data
+ * Averages all frames to produce a single frequency spectrum
+ * @private
+ * @param {Object} spectrogramData - Spectrogram data with data, numFrames, fftSize
+ * @returns {Float32Array} Average spectrum in dB
  */
 function calculateAverageSpectrum(spectrogramData) {
   const { data, numFrames, fftSize } = spectrogramData;
@@ -613,7 +748,13 @@ function calculateAverageSpectrum(spectrogramData) {
 }
 
 /**
- * Get energy in a frequency band
+ * Get average energy in a frequency band
+ * @private
+ * @param {Float32Array} spectrum - Average spectrum in dB
+ * @param {Object} band - Band definition with low/high properties
+ * @param {number} sampleRate - Sample rate in Hz
+ * @param {number} fftSize - FFT size
+ * @returns {number} Average energy in dB
  */
 function getBandEnergy(spectrum, band, sampleRate, fftSize) {
   const freqPerBin = sampleRate / fftSize;
@@ -629,7 +770,11 @@ function getBandEnergy(spectrum, band, sampleRate, fftSize) {
 }
 
 /**
- * Generate recommendations based on reference comparison
+ * Generate EQ recommendations based on reference comparison
+ * Suggests cuts or boosts when difference exceeds 3dB
+ * @private
+ * @param {BandComparison[]} bandComparison - Band comparison results
+ * @returns {Object[]} Array of EQ recommendations
  */
 function generateComparisonRecommendations(bandComparison) {
   const recommendations = [];
@@ -661,6 +806,9 @@ function generateComparisonRecommendations(bandComparison) {
 
 /**
  * Format frequency for display
+ * @private
+ * @param {number} freq - Frequency in Hz
+ * @returns {string} Formatted frequency string (e.g., "1.2kHz" or "500Hz")
  */
 function formatFreq(freq) {
   if (freq >= 1000) {
@@ -670,11 +818,28 @@ function formatFreq(freq) {
 }
 
 /**
- * Get mix analysis summary
- * @param {Object[]} problems - Detected problems
- * @param {Object[]} masking - Masking regions
- * @param {Object[]} resonances - Detected resonances
- * @returns {Object} Summary of mix issues
+ * Get mix analysis summary with overall status
+ * Aggregates all detected issues and provides an overall health status
+ *
+ * @param {DetectedProblem[]} problems - Detected frequency problems
+ * @param {MaskingRegion[]} masking - Detected masking regions
+ * @param {Resonance[]} resonances - Detected resonances
+ * @returns {{
+ *   overallStatus: 'good'|'minor'|'warning'|'issues',
+ *   severeCount: number,
+ *   moderateCount: number,
+ *   mildCount: number,
+ *   totalIssues: number,
+ *   problems: DetectedProblem[],
+ *   masking: MaskingRegion[],
+ *   resonances: Resonance[]
+ * }} Summary of mix issues with counts and status
+ *
+ * @example
+ * const summary = getMixAnalysisSummary(problems, masking, resonances);
+ * if (summary.overallStatus === 'issues') {
+ *   console.log(`Found ${summary.severeCount} severe issues`);
+ * }
  */
 export function getMixAnalysisSummary(problems, masking, resonances) {
   const severeCount = problems.filter(p => p.severity === 'severe').length +

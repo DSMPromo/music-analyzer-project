@@ -1,0 +1,16 @@
+# Requirements for Stem Separator (stem_separator.py)
+# Install with: pip install -r requirements-stem.txt
+
+# FastAPI framework
+fastapi>=0.100.0
+uvicorn>=0.23.0
+python-multipart>=0.0.6
+
+# Audio processing
+demucs>=4.0.0
+soundfile>=0.12.0
+noisereduce>=3.0.0
+numpy>=1.24.0
+
+# Note: FFmpeg is required system dependency
+# Install with: brew install ffmpeg (macOS) or apt install ffmpeg (Linux)

@@ -38,7 +38,9 @@ describe('useFFTAnalysis', () => {
 
     expect(result.current.frequencyData).toEqual([]);
     expect(result.current.waveformData).toEqual([]);
-    expect(result.current.chromagram).toEqual([]);
+    // Chromagram is initialized with 12 zeros (one per pitch class)
+    expect(result.current.chromagram).toHaveLength(12);
+    expect(result.current.chromagram.every(v => v === 0)).toBe(true);
   });
 
   it('should start analysis when analyser is provided', () => {

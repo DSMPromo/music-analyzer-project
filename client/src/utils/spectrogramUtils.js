@@ -1,19 +1,65 @@
 /**
- * Spectrogram Utilities
- * FFT processing, windowing functions, color mapping, and frequency scale utilities
- * for iZotope RX-style spectrogram visualization
+ * @module spectrogramUtils
+ * @description Spectrogram Utilities for professional audio visualization
+ *
+ * Provides FFT processing, windowing functions, color mapping, and frequency scale
+ * utilities for iZotope RX-style spectrogram visualization.
+ *
+ * ## Features
+ * - Cooley-Tukey FFT implementation
+ * - Hann, Hamming, and Blackman-Harris window functions
+ * - Logarithmic frequency scale mapping (20Hz-20kHz)
+ * - 8-point heat map color gradient
+ * - Pre-computed color lookup table for fast rendering
+ *
+ * ## Usage
+ * ```javascript
+ * import { computeSpectrogram, renderSpectrogramToImageData } from './spectrogramUtils';
+ *
+ * const spectrogram = computeSpectrogram(audioData, sampleRate, { fftSize: 2048 });
+ * const imageData = renderSpectrogramToImageData(spectrogram, width, height);
+ * ```
+ *
+ * @author Music Analyzer Team
+ * @version 1.0.0
+ */
+
+// ============================================
+// TYPE DEFINITIONS
+// ============================================
+
+/**
+ * @typedef {Object} SpectrogramData
+ * @property {Float32Array[]} data - Array of dB values per frame
+ * @property {number} numFrames - Total number of time frames
+ * @property {number} numBins - Number of frequency bins
+ * @property {number} duration - Audio duration in seconds
+ * @property {number} sampleRate - Sample rate in Hz
+ * @property {number} fftSize - FFT size used
+ * @property {number} hopSize - Hop size used
+ */
+
+/**
+ * @typedef {Object} ColorStop
+ * @property {number} db - Decibel value
+ * @property {number[]} color - RGB color array [r, g, b]
  */
 
 // ============================================
 // CONSTANTS
 // ============================================
 
-// Default FFT parameters
+/** @constant {number} Default FFT size (2048 = ~21.5Hz resolution at 44.1kHz) */
 export const DEFAULT_FFT_SIZE = 2048;
+/** @constant {number} Default hop size (512 = 75% overlap) */
 export const DEFAULT_HOP_SIZE = 512;
+/** @constant {number} Minimum dB value for display (-90dB = silence) */
 export const DEFAULT_MIN_DB = -90;
+/** @constant {number} Maximum dB value for display (0dB = full scale) */
 export const DEFAULT_MAX_DB = 0;
+/** @constant {number} Minimum frequency in Hz */
 export const DEFAULT_MIN_FREQ = 20;
+/** @constant {number} Maximum frequency in Hz */
 export const DEFAULT_MAX_FREQ = 20000;
 
 // iZotope-style heat map color stops (dB value to RGB)

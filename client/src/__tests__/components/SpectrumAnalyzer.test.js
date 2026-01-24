@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import SpectrumAnalyzer from '../../components/SpectrumAnalyzer';
+import SpectrumAnalyzer from '../../components/spectrogram/SpectrumAnalyzer';
 
 // Mock canvas context
 const mockCanvasContext = {

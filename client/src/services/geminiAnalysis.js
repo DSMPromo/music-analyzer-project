@@ -1,7 +1,20 @@
 // Gemini Mix Analysis Service
 // Communicates with the Python FastAPI backend for AI-powered mix analysis
 
+import { convertToWav, needsConversion } from '../utils/audioConversion';
+
 const GEMINI_API_URL = 'http://localhost:56401';
+
+/**
+ * Helper to ensure file is in a compatible format for analysis
+ */
+async function ensureCompatibleFormat(audioFile) {
+  if (needsConversion(audioFile)) {
+    const result = await convertToWav(audioFile);
+    return result.file;
+  }
+  return audioFile;
+}
 
 /**
  * Analyze an audio file using Gemini AI via OpenRouter.
@@ -28,8 +41,11 @@ export async function analyzeWithGemini(audioFile, options = {}) {
     sessionId = null
   } = options;
 
+  // Convert if needed (AIFF, etc.)
+  const compatibleFile = await ensureCompatibleFormat(audioFile);
+
   const formData = new FormData();
-  formData.append('audio', audioFile);
+  formData.append('audio', compatibleFile);
   formData.append('user_prompt', prompt);
   formData.append('include_spectrogram', includeSpectrogram.toString());
   formData.append('mode', mode);
@@ -251,10 +267,77 @@ export function getSegmentTimes(presetKey, duration) {
 }
 
 /**
- * Available AI models for selection.
+ * Available AI models for selection (fallback if API unavailable).
  */
 export const AVAILABLE_MODELS = [
-  { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', description: 'Fast and capable (recommended)' },
-  { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', description: 'Highest quality analysis' },
+  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'Latest and most capable (recommended)' },
+  { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', description: 'Fast and capable' },
+  { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', description: 'High quality analysis' },
   { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', description: 'Balanced speed/quality' }
 ];
+
+/**
+ * OpenRouter models (used when OpenRouter provider is selected).
+ */
+export const OPENROUTER_MODELS = [
+  { id: 'google/gemini-3-pro-preview', name: 'Gemini 3 Pro (Recommended)' },
+  { id: 'openai/gpt-5.2', name: 'GPT-5.2' },
+  { id: 'openai/gpt-5.2-chat', name: 'GPT-5.2 Chat (Fast)' },
+  { id: 'google/gemini-2.5-pro-preview-05-06', name: 'Gemini 2.5 Pro' },
+  { id: 'google/gemini-2.0-flash-exp:free', name: 'Gemini 2.0 Flash (Free)' },
+  { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet' },
+  { id: 'anthropic/claude-3-opus', name: 'Claude 3 Opus' },
+  { id: 'meta-llama/llama-3.2-90b-vision-instruct', name: 'Llama 3.2 90B Vision' },
+];
+
+/**
+ * Get current API settings.
+ *
+ * @returns {Promise<Object>} Settings object
+ */
+export async function getSettings() {
+  const response = await fetch(`${GEMINI_API_URL}/settings`);
+  if (!response.ok) {
+    throw new Error('Failed to fetch settings');
+  }
+  return response.json();
+}
+
+/**
+ * Update API settings.
+ *
+ * @param {Object} settings - Settings to update
+ * @param {string} settings.provider - 'google' or 'openrouter'
+ * @param {string} settings.google_api_key - Google API key
+ * @param {string} settings.openrouter_api_key - OpenRouter API key
+ * @param {string} settings.default_model - Default model ID
+ * @returns {Promise<Object>} Updated settings
+ */
+export async function updateSettings(settings) {
+  const formData = new FormData();
+
+  if (settings.provider !== undefined) {
+    formData.append('provider', settings.provider);
+  }
+  if (settings.google_api_key !== undefined) {
+    formData.append('google_api_key', settings.google_api_key);
+  }
+  if (settings.openrouter_api_key !== undefined) {
+    formData.append('openrouter_api_key', settings.openrouter_api_key);
+  }
+  if (settings.default_model !== undefined) {
+    formData.append('default_model', settings.default_model);
+  }
+
+  const response = await fetch(`${GEMINI_API_URL}/settings`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to update settings');
+  }
+
+  return response.json();
+}

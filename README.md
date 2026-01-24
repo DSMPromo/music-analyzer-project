@@ -700,6 +700,201 @@ Keep Knowledge Lab synced with the backend:
 
 <br>
 
+## Issue Tracking & Workflows
+
+<br>
+
+Integrated ticket system for bugs, features, and improvements.
+
+<br>
+
+### Issue Lifecycle
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           ISSUE WORKFLOW                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   ┌────────┐      ┌─────────────┐      ┌────────┐      ┌──────────┐        │
+│   │  OPEN  │─────►│ IN_PROGRESS │─────►│ REVIEW │─────►│ RESOLVED │        │
+│   └────────┘      └─────────────┘      └────────┘      └──────────┘        │
+│       │                                                      │              │
+│       │                                                      │              │
+│       ▼                                                      ▼              │
+│   ┌─────────┐                                          ┌─────────┐         │
+│   │ WONTFIX │                                          │ Backup  │         │
+│   └─────────┘                                          │ Created │         │
+│                                                        └─────────┘         │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+<br>
+
+### Ralph Loop (Autonomous Test Fixer)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         RALPH LOOP WORKFLOW                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Test Failure                                                               │
+│        │                                                                     │
+│        ▼                                                                     │
+│   ┌─────────────────┐                                                       │
+│   │ Create Ticket   │ ──► Status: OPEN                                      │
+│   │ TICKET-XXX      │                                                       │
+│   └────────┬────────┘                                                       │
+│            │                                                                 │
+│            ▼                                                                 │
+│   ┌─────────────────┐                                                       │
+│   │ Start Fixing    │ ──► Status: IN_PROGRESS                               │
+│   └────────┬────────┘                                                       │
+│            │                                                                 │
+│            ▼                                                                 │
+│   ┌─────────────────┐                                                       │
+│   │  Iteration 1    │ ──► Note: "Analyzing failure..."                      │
+│   │  Iteration 2    │ ──► Note: "Fixed import statement"                    │
+│   │  Iteration N    │ ──► Note: "Tests now passing"                         │
+│   └────────┬────────┘                                                       │
+│            │                                                                 │
+│            ▼                                                                 │
+│       Tests Pass?                                                            │
+│       /        \                                                             │
+│      No         Yes                                                          │
+│      │           │                                                           │
+│      ▼           ▼                                                           │
+│   Continue   ┌─────────────────┐                                            │
+│   or REVIEW  │ Resolve Ticket  │ ──► Status: RESOLVED                       │
+│              │ + Root Cause    │ ──► Document fix                           │
+│              │ + Resolution    │ ──► Create backup                          │
+│              └─────────────────┘                                            │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+<br>
+
+### Backup & Restore Workflow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         BACKUP WORKFLOW                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   ./scripts/backup-tickets.sh                                                │
+│            │                                                                 │
+│            ▼                                                                 │
+│   ┌─────────────────┐     ┌─────────────────┐                               │
+│   │ tickets.json    │────►│ JSON Backup     │ backups/tickets_YYYYMMDD.json │
+│   │ (data/)         │     │ (timestamped)   │                               │
+│   └─────────────────┘     └─────────────────┘                               │
+│            │                                                                 │
+│            ▼                                                                 │
+│   ┌─────────────────┐                                                       │
+│   │ CSV Export      │ backups/tickets_YYYYMMDD.csv                          │
+│   │ (spreadsheet)   │                                                       │
+│   └─────────────────┘                                                       │
+│            │                                                                 │
+│            ▼                                                                 │
+│   ┌─────────────────┐                                                       │
+│   │ Symlinks Update │ tickets_latest.json / tickets_latest.csv              │
+│   └─────────────────┘                                                       │
+│            │                                                                 │
+│            ▼                                                                 │
+│   ┌─────────────────┐                                                       │
+│   │ Cleanup old     │ Keep last 10 backups                                  │
+│   └─────────────────┘                                                       │
+│                                                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                         RESTORE WORKFLOW                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   ./scripts/restore-tickets.sh --latest                                      │
+│            │                                                                 │
+│            ▼                                                                 │
+│   ┌─────────────────┐                                                       │
+│   │ Backup current  │ Save existing data before restore                     │
+│   └─────────────────┘                                                       │
+│            │                                                                 │
+│            ▼                                                                 │
+│   ┌─────────────────┐                                                       │
+│   │ Validate backup │ Check JSON structure                                  │
+│   └─────────────────┘                                                       │
+│            │                                                                 │
+│            ▼                                                                 │
+│   ┌─────────────────┐                                                       │
+│   │ Restore data    │ Copy to data/tickets.json                             │
+│   └─────────────────┘                                                       │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+<br>
+
+### Commands
+
+**View Issues in UI**
+```
+Click "Issues" button in header
+```
+
+**Ticket Management**
+```bash
+./scripts/ralph-ticket.sh summary                    # View statistics
+./scripts/ralph-ticket.sh get-open                   # List open tickets
+./scripts/ralph-ticket.sh create "Title" "Desc" "Component" "Priority"
+./scripts/ralph-ticket.sh status TICKET-001 IN_PROGRESS
+./scripts/ralph-ticket.sh note TICKET-001 "Added note"
+./scripts/ralph-ticket.sh resolve TICKET-001 "Root cause" "Resolution"
+```
+
+**Ralph Loop**
+```bash
+./scripts/ralph-loop.sh                              # Start autonomous fixer
+./scripts/ralph-loop.sh stop                         # Stop gracefully
+./scripts/ralph-loop.sh status                       # View summary
+```
+
+**Backup & Restore**
+```bash
+./scripts/backup-tickets.sh                          # Create backup
+./scripts/restore-tickets.sh --list                  # List backups
+./scripts/restore-tickets.sh --latest                # Restore latest
+./scripts/restore-tickets.sh backups/tickets_*.json  # Restore specific
+./scripts/verify-tickets.sh                          # Verify integrity
+```
+
+<br>
+
+### Database Schema
+
+```json
+{
+  "tickets": [{
+    "id": "TICKET-001",
+    "title": "Issue title",
+    "description": "Details",
+    "priority": "Critical|High|Medium|Low",
+    "component": "Chord Detection|Rhythm Detection|...",
+    "status": "OPEN|IN_PROGRESS|REVIEW|RESOLVED|WONTFIX",
+    "created": "2026-01-24",
+    "updated": "2026-01-24",
+    "resolved": "2026-01-24",
+    "rootCause": "Why it happened",
+    "resolution": "How it was fixed",
+    "notes": [{ "text": "...", "timestamp": "..." }]
+  }],
+  "nextId": 7
+}
+```
+
+<br>
+
+---
+
+<br>
+
 ## Development
 
 <br>

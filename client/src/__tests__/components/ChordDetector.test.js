@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import ChordDetector from '../../components/ChordDetector';
+import ChordDetector from '../../components/chord/ChordDetector';
 
 // Mock the useChordDetection hook with controllable return value
 let mockChordDetectionReturn = {
@@ -14,6 +14,7 @@ let mockChordDetectionReturn = {
     { root: 'G', quality: 'major', symbol: 'G', timestamp: 1000 },
     { root: 'Am', quality: 'minor', symbol: 'Am', timestamp: 2000 },
   ],
+  hasHarmonicContent: true,
   analyzeChromagram: jest.fn(),
   clearHistory: jest.fn(),
 };
@@ -39,6 +40,7 @@ describe('ChordDetector', () => {
         { root: 'G', quality: 'major', symbol: 'G', timestamp: 1000 },
         { root: 'Am', quality: 'minor', symbol: 'Am', timestamp: 2000 },
       ],
+      hasHarmonicContent: true,
       analyzeChromagram: jest.fn(),
       clearHistory: jest.fn(),
     };
@@ -59,14 +61,18 @@ describe('ChordDetector', () => {
   it('should show confidence indicator', () => {
     render(<ChordDetector chromagram={mockChromagram} />);
 
-    expect(screen.getByText(/85%|0\.85/)).toBeInTheDocument();
+    // Confidence is now shown as a visual bar with inline style
+    const confidenceBar = document.querySelector('.confidence-fill');
+    expect(confidenceBar).toBeInTheDocument();
+    expect(confidenceBar.style.width).toBe('85%');
   });
 
   it('should display chord history', () => {
     render(<ChordDetector chromagram={mockChromagram} showHistory={true} />);
 
-    expect(screen.getByText('G')).toBeInTheDocument();
-    expect(screen.getByText('Am')).toBeInTheDocument();
+    // Chords may appear multiple times (in legend, bar grid, recent changes)
+    expect(screen.getAllByText('G').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Am').length).toBeGreaterThan(0);
   });
 
   it('should show no chord when chromagram is empty', () => {
@@ -76,13 +82,14 @@ describe('ChordDetector', () => {
     mockChordDetectionReturn = {
       currentChord: null,
       chordHistory: [],
+      hasHarmonicContent: true,
       analyzeChromagram: jest.fn(),
       clearHistory: jest.fn(),
     };
 
     render(<ChordDetector chromagram={emptyChromagram} />);
 
-    expect(screen.getByText(/no chord/i)).toBeInTheDocument();
+    expect(screen.getByText(/Play audio to detect chords/i)).toBeInTheDocument();
   });
 
   it('should display chord diagram when enabled', () => {

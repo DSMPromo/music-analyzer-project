@@ -1,0 +1,26 @@
+# Rhythm Analyzer Dependencies
+# Install with: pip install -r requirements-rhythm.txt
+
+# Core audio processing
+librosa>=0.10.1
+soundfile>=0.12.1
+numpy>=1.26.0,<2.4.0  # numba compatibility
+scipy>=1.12.0
+
+# Optional: madmom for CNN-based beat detection (requires Python < 3.13)
+# madmom>=0.16.1  # Uncomment if using Python 3.11 or earlier
+# Note: madmom requires Cython to build. Install with:
+#   pip install cython numpy
+#   pip install madmom
+
+# ML classification
+scikit-learn>=1.3.0
+joblib>=1.3.0
+
+# Web API
+fastapi>=0.109.0
+uvicorn>=0.27.0
+python-multipart>=0.0.6
+
+# Audio file handling
+pydub>=0.25.1

@@ -1,0 +1,128 @@
+{
+  "tickets": [
+    {
+      "id": "TICKET-001",
+      "title": "Chord Detection Accuracy with Complex Arrangements",
+      "description": "Advanced chord detection may struggle with complex arrangements that have multiple overlapping instruments in similar frequency ranges.",
+      "priority": "Medium",
+      "component": "Chord Detection",
+      "status": "OPEN",
+      "created": "2026-01-23",
+      "updated": "2026-01-23",
+      "steps": "1. Load a track with dense orchestration\n2. Enable Advanced mode\n3. Observe detection accuracy",
+      "expected": "Accurate chord detection",
+      "actual": "May show incorrect chords or low confidence",
+      "notes": [
+        {
+          "text": "Consider adding instrument separation preprocessing. May need stem separation for best results.",
+          "timestamp": "2026-01-23T12:00:00.000Z"
+        }
+      ],
+      "relatedIncidents": []
+    },
+    {
+      "id": "TICKET-002",
+      "title": "Grid Quantization Options",
+      "description": "Add more quantization options for chord grid alignment (1/4, 1/8, 1/16 note resolution).",
+      "priority": "Low",
+      "component": "Grid/Timeline",
+      "status": "OPEN",
+      "created": "2026-01-23",
+      "updated": "2026-01-23",
+      "steps": null,
+      "expected": null,
+      "actual": null,
+      "notes": [
+        {
+          "text": "Acceptance Criteria:\n- Dropdown to select quantization resolution\n- Chords snap to selected grid division\n- Visual grid lines match resolution",
+          "timestamp": "2026-01-23T12:00:00.000Z"
+        }
+      ],
+      "relatedIncidents": []
+    },
+    {
+      "id": "TICKET-003",
+      "title": "Grid Playhead 2-Bar Delay",
+      "description": "Playhead line appears 2 bars late compared to actual audio position.",
+      "priority": "High",
+      "component": "Grid/Timeline",
+      "status": "RESOLVED",
+      "created": "2026-01-23",
+      "updated": "2026-01-23",
+      "resolved": "2026-01-23",
+      "steps": null,
+      "expected": null,
+      "actual": null,
+      "rootCause": "Chord timestamps used Date.now() (wall clock) but grid used currentTimeMs (playback position). Different time bases caused offset.",
+      "resolution": "Changed processFullMix to accept playbackTimeMs parameter and use it for chord timestamps.",
+      "notes": [],
+      "relatedIncidents": [
+        "INCIDENT-002"
+      ]
+    },
+    {
+      "id": "TICKET-004",
+      "title": "Settings Reset on Re-analyze",
+      "description": "Energy Threshold, Min Hit Interval, and Genre Preset reset to defaults after clicking Re-analyze.",
+      "priority": "High",
+      "component": "Rhythm Detection",
+      "status": "RESOLVED",
+      "created": "2026-01-23",
+      "updated": "2026-01-23",
+      "resolved": "2026-01-23",
+      "steps": null,
+      "expected": null,
+      "actual": null,
+      "rootCause": "Local state not synced with props after re-render. Used defaultValue instead of controlled value.",
+      "resolution": "Added useEffect to preserve user values, changed to controlled components, pass settings to callback.",
+      "notes": [],
+      "relatedIncidents": [
+        "INCIDENT-003"
+      ]
+    },
+    {
+      "id": "TICKET-005",
+      "title": "Full Mix Chord Detection Not Working",
+      "description": "Nothing detected when using Advanced mode with full mix (no stems).",
+      "priority": "Critical",
+      "component": "Chord Detection",
+      "status": "RESOLVED",
+      "created": "2026-01-23",
+      "updated": "2026-01-23",
+      "resolved": "2026-01-23",
+      "steps": null,
+      "expected": null,
+      "actual": null,
+      "rootCause": "Sparse band extraction lost frequency resolution. Sample rate mismatch. Band separation too narrow.",
+      "resolution": "Rewrote processFullMix with overlapping frequency bands and proper sample rate sync.",
+      "notes": [],
+      "relatedIncidents": [
+        "INCIDENT-001"
+      ]
+    },
+    {
+      "id": "TICKET-006",
+      "title": "Test Ralph Integration",
+      "description": "Testing ticket creation from Ralph Loop script",
+      "priority": "Low",
+      "component": "General",
+      "status": "RESOLVED",
+      "created": "2026-01-24",
+      "updated": "2026-01-24",
+      "steps": "Auto-detected by Ralph Loop",
+      "expected": "Tests should pass",
+      "actual": "Tests failing",
+      "notes": [
+        {
+          "text": "Testing note addition from Ralph Loop",
+          "timestamp": "2026-01-24T06:23:50.011Z"
+        }
+      ],
+      "relatedIncidents": [],
+      "rootCause": "Test root cause",
+      "resolution": "Test resolution - Ralph Loop integration working",
+      "resolved": "2026-01-24"
+    }
+  ],
+  "nextId": 7
+}

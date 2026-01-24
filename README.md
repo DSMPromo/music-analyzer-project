@@ -342,6 +342,66 @@ Returns MIDI file with detected notes, velocities, and timing.
 
 <br>
 
+## Personal Knowledge Base
+
+<br>
+
+**Self-learning system that remembers what you love.**
+
+<br>
+
+### Your Favorites
+
+Save your favorite instruments and get instant dial-in configurations:
+
+```
+"I love M1 Piano" → System remembers
+
+Next session at 128 BPM:
+  M1 Piano @ 128 BPM
+  ├─ Delay: 351ms (dotted 1/8)
+  ├─ Reverb Pre-delay: 29ms (natural)
+  ├─ Reverb Decay: 937ms (2 beats)
+  └─ Comp Release: 117ms (1/16 note)
+```
+
+<br>
+
+### BPM-Synced Calculations
+
+Every timing value calculated from your tempo:
+
+| Setting | 120 BPM | 140 BPM |
+|---------|---------|---------|
+| Quarter note | 500ms | 428ms |
+| Eighth note | 250ms | 214ms |
+| Dotted 1/8 | 375ms | 321ms |
+| Triplet 1/8 | 167ms | 143ms |
+
+<br>
+
+### AI Sound Design Assistant
+
+Talk to the AI about your sound:
+
+```
+You: "I'm working on a house track, help me dial in the M1 piano"
+
+AI: "For house at 124 BPM, here's your M1 Piano setup:
+     - Delay: 363ms (dotted 1/8) for that classic groove
+     - Pre-delay: 30ms to keep it upfront
+     - Reverb: 968ms decay (2 beats) for space without mud
+     - Sidechain from kick with 10ms attack..."
+```
+
+The AI remembers your preferences and gives exact values based on your BPM.
+
+<br>
+
+---
+
+<br>
+
 ## Knowledge Lab
 
 <br>

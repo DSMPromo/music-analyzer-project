@@ -772,9 +772,13 @@ def detect_drums_beat_aligned(y: np.ndarray, sr: int, beats: np.ndarray, time_si
     if len(beats) > 0:
         sixteenth_notes.append(beats[-1])
 
-    # Collect all energies for adaptive thresholds (snare detection)
-    all_mid_energies = [get_energy_at_time(y_mid, sr, beats[i]) for i in range(len(beats)) if i % time_signature in [1, 3]]
+    # Collect all energies for adaptive thresholds (snare/clap detection)
+    backbeat_indices = [i for i in range(len(beats)) if i % time_signature in [1, 3]]
+    all_mid_energies = [get_energy_at_time(y_mid, sr, beats[i]) for i in backbeat_indices]
+    all_high_at_backbeat = [get_energy_at_time(y_high, sr, beats[i]) for i in backbeat_indices]
+
     snare_threshold_adaptive = np.percentile(all_mid_energies, 40) if all_mid_energies else mid_threshold
+    clap_threshold_adaptive = np.percentile(all_high_at_backbeat, 35) if all_high_at_backbeat else high_threshold
 
     # Process each beat for snares/claps (only on-beat)
     for i, beat_time in enumerate(beats):
@@ -796,9 +800,11 @@ def detect_drums_beat_aligned(y: np.ndarray, sr: int, beats: np.ndarray, time_si
             elif mid_energy > mid_threshold * 1.2 and mid_energy > low_energy * 0.3:
                 results['snare'].append(beat_time)
 
-        # CLAP: Needs both mid and high, and must be stronger than surrounding
+        # CLAP: Use adaptive threshold - often layered WITH snare
+        # In modern productions, clap and snare play together on beats 2 & 4
         if beat_in_bar in [1, 3]:
-            if mid_energy > mid_threshold * 1.5 and high_energy > high_threshold * 1.2:
+            # Clap needs significant high frequency content (adaptive threshold)
+            if high_energy > clap_threshold_adaptive:
                 results['clap'].append(beat_time)
 
     # KICK/808: Check on-beat positions with adaptive thresholds
@@ -2099,22 +2105,36 @@ def detect_drums_with_sensitivity(
 
     # === CLAP ===
     # Claps are detected at beats 2 & 4, distinguished from snares by higher frequencies
+    # In many modern productions, clap and snare are layered - detect both
     clap_sens = sensitivities.get('clap', 0.5)
     clap_hits = []
 
     # Use adaptive threshold based on high-frequency content at snare positions
     clap_highs = [get_energy_at_time(y_high, sr, p['time']) for p in snare_positions]
-    clap_threshold_high = np.percentile(clap_highs, 40 + clap_sens * 30) if clap_highs else base_high
+    clap_threshold_high = np.percentile(clap_highs, 30 + clap_sens * 30) if clap_highs else base_high
+
+    # Also calculate typical high/mid ratio across all snare positions
+    high_mid_ratios = []
+    for pos in snare_positions:
+        high_energy = get_energy_at_time(y_high, sr, pos['time'])
+        mid_energy = pos['mid']
+        ratio = high_energy / (mid_energy + 1e-10)
+        high_mid_ratios.append(ratio)
+
+    # Adaptive ratio threshold based on the track's character
+    median_ratio = np.median(high_mid_ratios) if high_mid_ratios else 0.3
+    ratio_threshold = max(0.15, median_ratio * 0.5)  # Lower threshold, based on track
 
     for pos in snare_positions:
         high_energy = get_energy_at_time(y_high, sr, pos['time'])
         mid_energy = pos['mid']
 
-        # Clap has significant high-frequency content (more than snare)
-        # Ratio of high to mid energy distinguishes clap from snare
+        # Clap has significant high-frequency content
         high_mid_ratio = high_energy / (mid_energy + 1e-10)
 
-        if high_energy > clap_threshold_high and high_mid_ratio > 0.3:
+        # Detect clap if: high energy above threshold AND ratio above adaptive threshold
+        # OR if high energy is very strong (likely layered clap)
+        if high_energy > clap_threshold_high and (high_mid_ratio > ratio_threshold or high_energy > clap_threshold_high * 1.3):
             clap_hits.append({'time': float(pos['time']), 'type': 'clap', 'confidence': min(high_energy / clap_threshold_high, 1.0), 'energy': high_energy})
 
     results['clap'] = {

@@ -29,6 +29,7 @@ import FixGridPanel from './components/FixGridPanel';
 import RhythmGrid from './components/RhythmGrid';
 import RhythmGridPro from './components/RhythmGridPro';
 import { KnowledgeLab } from './components/knowledgelab';
+import PersonalKnowledge from './components/PersonalKnowledge';
 
 function App() {
   const [audioFile, setAudioFile] = useState(null);
@@ -1067,6 +1068,13 @@ function App() {
         {/* Stem Separator Section */}
         <section className="stem-section">
           <StemSeparator audioFile={audioFile} />
+        </section>
+
+        {/* Personal Knowledge Base Section */}
+        <section className="personal-knowledge-section">
+          <PersonalKnowledge
+            currentBPM={effectiveTempo || estimatedTempo || 120}
+          />
         </section>
 
         {/* Knowledge Lab Section */}

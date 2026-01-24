@@ -459,8 +459,8 @@ function App() {
   // Trigger Python rhythm analysis when audio file is loaded
   useEffect(() => {
     if (audioFile && rhythmServiceAvailable) {
-      // Run Python analysis in background for accurate results
-      analyzeRhythmFile(audioFile, { useStem: false, mergeWithJs: null });
+      // Run Python AI analysis for accurate results (adaptive thresholds)
+      analyzeRhythmFile(audioFile, { useAI: true });
     }
   }, [audioFile, rhythmServiceAvailable, analyzeRhythmFile]);
 
@@ -961,7 +961,7 @@ function App() {
               onOpenFixGrid={openFixGrid}
               onReanalyzeRhythm={() => {
                 if (audioFile) {
-                  analyzeRhythmFile(audioFile, { useStem: false, mergeWithJs: null });
+                  analyzeRhythmFile(audioFile, { useAI: true });
                 }
               }}
               onReanalyzeRhythmWithAI={() => {

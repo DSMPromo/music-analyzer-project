@@ -30,6 +30,7 @@ import RhythmGrid from './components/RhythmGrid';
 import RhythmGridPro from './components/RhythmGridPro';
 import { KnowledgeLab } from './components/knowledgelab';
 import PersonalKnowledge from './components/PersonalKnowledge';
+import TicketManager, { TicketBadge } from './components/TicketManager';
 
 function App() {
   const [audioFile, setAudioFile] = useState(null);
@@ -44,6 +45,10 @@ function App() {
   const [aiSuggestions, setAiSuggestions] = useState([]);
   const [aiQuery, setAiQuery] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
+
+  // Ticket manager state
+  const [showTicketManager, setShowTicketManager] = useState(false);
+  const [openTicketCount, setOpenTicketCount] = useState(0);
 
   const audioRef = useRef(null);
   const sourceRef = useRef(null);
@@ -679,12 +684,55 @@ function App() {
     };
   }, [audioUrl, stopAnalysis]);
 
+  // Fetch open ticket count for header badge
+  useEffect(() => {
+    const fetchTicketStats = async () => {
+      try {
+        const response = await fetch('http://localhost:56404/api/tickets/stats/summary');
+        if (response.ok) {
+          const stats = await response.json();
+          setOpenTicketCount(stats.open + stats.inProgress);
+        }
+      } catch (err) {
+        // Silently fail - ticket service may not be running
+      }
+    };
+
+    fetchTicketStats();
+    // Refresh every 30 seconds
+    const interval = setInterval(fetchTicketStats, 30000);
+    return () => clearInterval(interval);
+  }, [showTicketManager]);
+
   return (
     <div className="App">
       <header className="App-header">
-        <h1>Music Analyzer</h1>
-        <p>AI-powered music analysis with chord detection and MIDI generation</p>
+        <div className="header-content">
+          <div className="header-title">
+            <h1>Music Analyzer</h1>
+            <p>AI-powered music analysis with chord detection and MIDI generation</p>
+          </div>
+          <nav className="header-nav">
+            <TicketBadge
+              count={openTicketCount}
+              onClick={() => setShowTicketManager(true)}
+            />
+            <button
+              className="nav-btn"
+              onClick={() => setShowTicketManager(true)}
+              title="Issue Tracker"
+            >
+              Issues
+            </button>
+          </nav>
+        </div>
       </header>
+
+      {/* Ticket Manager Modal */}
+      <TicketManager
+        isOpen={showTicketManager}
+        onClose={() => setShowTicketManager(false)}
+      />
 
       <main className="App-main">
         <section className="input-section">

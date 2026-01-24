@@ -1,6 +1,7 @@
 # Service Incidents Log
 
 > **Related:** See [TICKETS.md](./TICKETS.md) for issue tracking
+> **Integrated System:** Tickets are now managed through the in-app Issue Tracker (click "Issues" in the header)
 
 ## 2026-01-23: Chord Detection & Rhythm Settings Issues
 

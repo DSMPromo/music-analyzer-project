@@ -2,6 +2,8 @@
 
 Track bugs, feature requests, and improvements.
 
+> **Integrated System:** Tickets are now managed through the in-app Issue Tracker (click "Issues" in the header). This file is kept for reference, but the database at `data/tickets.json` is the source of truth.
+
 ---
 
 ## Open Tickets

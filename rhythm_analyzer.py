@@ -651,6 +651,10 @@ def detect_drums_beat_aligned(y: np.ndarray, sr: int, beats: np.ndarray, time_si
     if len(beats) > 0:
         sixteenth_notes.append(beats[-1])
 
+    # Collect all energies for adaptive thresholds (snare detection)
+    all_mid_energies = [get_energy_at_time(y_mid, sr, beats[i]) for i in range(len(beats)) if i % time_signature in [1, 3]]
+    snare_threshold_adaptive = np.percentile(all_mid_energies, 40) if all_mid_energies else mid_threshold
+
     # Process each beat for snares/claps (only on-beat)
     for i, beat_time in enumerate(beats):
         beat_in_bar = i % time_signature  # 0, 1, 2, 3 for 4/4
@@ -659,11 +663,16 @@ def detect_drums_beat_aligned(y: np.ndarray, sr: int, beats: np.ndarray, time_si
         high_energy = get_energy_at_time(y_high, sr, beat_time)
         low_energy = get_energy_at_time(y_low, sr, beat_time)
 
-        # SNARE: Must have mid energy AND mid must dominate over low (not just kick harmonics)
-        # Only on beats 2 and 4
+        # SNARE: Use adaptive threshold based on mid energy distribution
+        # For trap/hip-hop with heavy 808s, we can't rely on mid > low comparison
+        # because 808s dominate. Instead use percentile-based detection.
         if beat_in_bar in [1, 3]:
-            # Snare needs mid energy to be significant AND higher than low (kick)
-            if mid_energy > mid_threshold * 1.2 and mid_energy > low_energy * 0.6:
+            # Primary condition: mid energy above adaptive threshold
+            # This catches snares even when 808 is louder
+            if mid_energy > snare_threshold_adaptive:
+                results['snare'].append(beat_time)
+            # Fallback: if mid energy is significant on its own (legacy condition)
+            elif mid_energy > mid_threshold * 1.2 and mid_energy > low_energy * 0.3:
                 results['snare'].append(beat_time)
 
         # CLAP: Needs both mid and high, and must be stronger than surrounding

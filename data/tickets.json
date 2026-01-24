@@ -458,7 +458,34 @@
         }
       ],
       "relatedIncidents": []
+    },
+    {
+      "id": "TICKET-023",
+      "title": "Trap Snare Detection Too Strict - Only 28 Snares Detected",
+      "description": "Snare detection in trap music is too strict. Expected ~240 snares but only 28 detected. The condition 'mid_energy > low_energy * 0.6' fails because 808s dominate the low frequencies in trap.",
+      "priority": "High",
+      "component": "Rhythm Detection",
+      "status": "RESOLVED",
+      "created": "2026-01-24",
+      "updated": "2026-01-24",
+      "resolved": "2026-01-24",
+      "steps": "1. Load trap track\n2. Run rhythm analysis\n3. Observe snare count is much lower than expected",
+      "expected": "~240 snares for a 3-minute trap track at 172 BPM",
+      "actual": "Only 28 snares detected",
+      "rootCause": "Line 666 in rhythm_analyzer.py requires mid_energy > low_energy * 0.6, but in trap music with heavy 808s, low_energy is 5-10x higher than mid_energy, causing most snares to be missed.",
+      "resolution": "Changed snare detection to use adaptive percentile-based threshold (40th percentile of mid energies on beats 2 & 4) instead of requiring mid > low * 0.6. Added fallback with relaxed ratio (0.3). This catches snares even when 808s dominate the low frequencies.",
+      "notes": [
+        {
+          "text": "User report: BPM 172.3 (40% conf), 28 snares, 519 kicks, 382 hi-hats. The snare ratio to kicks should be closer to 1:2.",
+          "timestamp": "2026-01-24T09:00:00.000Z"
+        },
+        {
+          "text": "Fixed by implementing adaptive snare threshold using np.percentile(all_mid_energies, 40). All 201 tests pass.",
+          "timestamp": "2026-01-24T09:10:00.000Z"
+        }
+      ],
+      "relatedIncidents": []
     }
   ],
-  "nextId": 23
+  "nextId": 24
 }

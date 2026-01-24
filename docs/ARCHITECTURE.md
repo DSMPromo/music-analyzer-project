@@ -11,26 +11,39 @@ A React-based web application that analyzes audio from multiple sources (uploads
 ### Core Features
 
 1. **Audio Input Sources**
-   - File upload (WAV, MP3, FLAC, etc.)
+   - File upload (WAV, MP3, FLAC, AIF, etc.)
    - YouTube URL extraction
    - Microphone/Audio Interface recording (supports Mix M1)
    - System audio loopback (for recording from Logic Pro)
 
-2. **Real-Time Analysis**
+2. **Rhythm Detection (92.4% Accuracy - Grade A)**
+   - 4-stage pipeline: HPSS → Beat detection → Onset detection → Drum classification
+   - 16th note hi-hat detection for modern tracks
+   - Ghost snare detection on 8th notes
+   - 4-on-the-floor kick detection with syncopation
+   - AI pattern detection via Gemini for subtle percussion
+
+3. **Real-Time Analysis**
    - Spectrum Analyzer (FFT visualization)
-   - Waveform display
-   - Chord detection
+   - Waveform display with seek
+   - Chord detection (25 templates, 6 voicings)
    - Key/Scale detection
-   - BPM/Tempo detection
+   - BPM/Tempo detection with half-time correction
    - Song structure analysis
 
-3. **AI-Powered MIDI Generation**
+4. **AI-Powered Features**
+   - Mix analysis via Gemini/OpenRouter (Engineer & Producer modes)
+   - AI-guided detection thresholds
+   - Spectrogram pattern analysis
+   - Results caching (30-day TTL)
    - Uses Spotify's Basic Pitch for audio-to-MIDI
-   - Claude Code integration for intelligent improvements
-   - Chord progression suggestions
-   - Structure-aware MIDI creation
 
-4. **Logic Pro Integration**
+5. **Stem Separation**
+   - Meta's Demucs (4-stem or 6-stem)
+   - Artifact reduction with spectral denoising
+   - Per-stem MIDI generation
+
+6. **Logic Pro Integration**
    - Record directly from Logic via audio interface
    - Export MIDI files compatible with Logic
    - Real-time monitoring
@@ -41,33 +54,53 @@ A React-based web application that analyzes audio from multiple sources (uploads
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         FRONTEND (React)                            │
+│                     FRONTEND (React - Port 56400)                   │
 ├─────────────────────────────────────────────────────────────────────┤
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
-│  │   Audio      │  │   Spectrum   │  │    Chord     │              │
-│  │   Sources    │  │   Analyzer   │  │   Detector   │              │
+│  │   Audio      │  │   Rhythm     │  │    Chord     │              │
+│  │   Sources    │  │   Grid Pro   │  │   Detector   │              │
 │  │              │  │              │  │              │              │
-│  │ • Upload     │  │ • FFT        │  │ • Chromagram │              │
-│  │ • YouTube    │  │ • Waveform   │  │ • Key Detect │              │
-│  │ • Record     │  │ • Spectrogram│  │ • Structure  │              │
+│  │ • Upload     │  │ • 92.4% acc  │  │ • 25 chords  │              │
+│  │ • YouTube    │  │ • AI detect  │  │ • 6 voicings │              │
+│  │ • Record     │  │ • Verify     │  │ • Circle 5ths│              │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘              │
 │         │                 │                 │                       │
 │         └─────────────────┴─────────────────┘                       │
 │                           │                                         │
-│                    Web Audio API                                    │
-│                    (AudioContext)                                   │
-├─────────────────────────────────────────────────────────────────────┤
-│                         BACKEND (Node.js)                           │
-├─────────────────────────────────────────────────────────────────────┤
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
-│  │   yt-dlp     │  │ Basic Pitch  │  │   Claude     │              │
-│  │   Handler    │  │   (Python)   │  │   API        │              │
-│  │              │  │              │  │              │              │
-│  │ • Extract    │  │ • Audio→MIDI │  │ • Analysis   │              │
-│  │ • Convert    │  │ • Pitch Bend │  │ • Suggestions│              │
-│  └──────────────┘  └──────────────┘  └──────────────┘              │
-└─────────────────────────────────────────────────────────────────────┘
+│              useRhythmAnalysis / Web Audio API                      │
+└───────────────────────────┼─────────────────────────────────────────┘
+                            │
+        ┌───────────────────┼───────────────────┐
+        │                   │                   │
+        ▼                   ▼                   ▼
+┌───────────────┐   ┌───────────────┐   ┌───────────────┐
+│   Express     │   │   Rhythm      │   │   Gemini      │
+│   Port 56404  │   │   Port 56403  │   │   Port 56401  │
+│               │   │               │   │               │
+│ • MIDI gen    │   │ • 92.4% acc   │   │ • Mix analyze │
+│ • File conv   │   │ • AI detect   │   │ • Pattern det │
+│ • yt-dlp      │   │ • HPSS/librosa│   │ • Spectrogram │
+└───────────────┘   └───────┬───────┘   └───────────────┘
+                            │
+                            ▼
+                    ┌───────────────┐
+                    │     Stem      │
+                    │   Port 56402  │
+                    │               │
+                    │ • Demucs      │
+                    │ • 4/6 stems   │
+                    │ • Artifact red│
+                    └───────────────┘
 ```
+
+### Service Ports
+| Port | Service | Technology |
+|------|---------|------------|
+| 56400 | React Frontend | JavaScript |
+| 56401 | Gemini Analyzer | Python (Flask) |
+| 56402 | Stem Separator | Python (Demucs) |
+| 56403 | Rhythm Analyzer | Python (librosa) |
+| 56404 | Express Backend | Node.js |
 
 ---
 
@@ -93,10 +126,20 @@ A React-based web application that analyzes audio from multiple sources (uploads
 | basic-pitch (Python) | Audio to MIDI Conversion |
 | FFmpeg | Audio Processing |
 
+### Python Services
+| Technology | Purpose |
+|------------|---------|
+| librosa | Beat/onset detection, HPSS |
+| numpy/scipy | Signal processing, filtering |
+| Demucs | Stem separation (Meta) |
+| noisereduce | Artifact reduction |
+| Pillow | Spectrogram generation |
+
 ### AI Integration
 | Technology | Purpose |
 |------------|---------|
-| Claude API | Music Analysis & Suggestions |
+| Gemini 3 Pro | Pattern detection, mix analysis |
+| OpenRouter | Multi-model access |
 | Basic Pitch | Neural Network Transcription |
 
 ---

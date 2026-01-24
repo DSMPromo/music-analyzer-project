@@ -649,7 +649,22 @@
         }
       ],
       "relatedIncidents": []
+    },
+    {
+      "id": "TICKET-030",
+      "title": "Spectrogram-Guided Percussion Detection",
+      "description": "Current percussion detection over-counts hits (810 detected vs 78 validated). Need to use spectrogram analysis FIRST to identify frequency bands and validate hits.\n\nProblem:\n- Current detection finds 810 perc hits\n- Spectrogram validation shows only 78 are real percussion\n- Most false positives are synth harmonics\n\nSolution:\n1. Pre-analyze spectrogram to find energy bands\n2. Use HPSS to separate harmonic from percussive\n3. Filter for quick attack times (<15ms) - percussion signature\n4. Validate each hit against spectrogram energy\n\nValidated results for Blinding Lights:\n- Real wood/perc hits: 78 (vs 810 detected)\n- Peak frequencies: 3000-3500 Hz (wood block range)\n- Most hits in bars 20-40 (21 hits)\n- Attack time threshold: <15ms",
+      "priority": "High",
+      "component": "Rhythm Detection",
+      "status": "OPEN",
+      "created": "2026-01-24",
+      "updated": "2026-01-24",
+      "steps": "1. Load Blinding Lights\n2. Run rhythm detection\n3. Check perc hit count\n4. Compare with spectrogram validation",
+      "expected": "78 validated perc hits with spectrogram verification",
+      "actual": "810 perc hits detected (10x over-count)",
+      "notes": [],
+      "relatedIncidents": []
     }
   ],
-  "nextId": 30
+  "nextId": 31
 }

@@ -73,13 +73,65 @@ Each instrument type has custom processing presets for optimal detection.
 
 <br>
 
+### Separate & Convert
+
+**Stem Separation** — Powered by Meta's Demucs. Split any track into drums, bass, vocals, and other. Optional 6-stem mode adds guitar and piano.
+
+**MIDI Export** — Convert audio to MIDI using Spotify's Basic Pitch. Export detected rhythms and melodies for your DAW.
+
+**Artifact Reduction** — Clean up separation artifacts with stem-specific spectral denoising. Adjustable from subtle to aggressive.
+
+<br>
+
 ### Understand Deeply
 
 **Chord Detection** — Real-time recognition with interactive piano display. Circle of Fifths visualization. Nashville notation.
 
-**AI Mix Engineer** — Gemini-powered analysis with Engineer and Producer personas. Ask questions, get professional insights.
+**AI Mix Engineer** — Multi-provider AI analysis with Engineer and Producer personas. Ask questions, get professional insights.
 
 **Knowledge Lab** — Song structures, signal chains, frequency guides. Learn while you work.
+
+<br>
+
+---
+
+<br>
+
+## AI Integration
+
+<br>
+
+**Free tier available.** No API key required to start.
+
+<br>
+
+| Provider | Models | Cost |
+|----------|--------|------|
+| **Google Gemini** | Gemini 2.0 Flash | Free |
+| | Gemini 2.5 Pro | Pay per use |
+| **OpenRouter** | GPT-4, Claude, Llama | Pay per use |
+
+<br>
+
+Use the built-in settings panel to configure your preferred provider:
+
+```
+Settings → API Provider → Choose Gemini or OpenRouter
+```
+
+<br>
+
+**Two AI Personas**
+
+*Engineer Mode* — Technical analysis. EQ curves, compression ratios, frequency conflicts, phase issues.
+
+*Producer Mode* — Creative feedback. Arrangement ideas, energy flow, hook suggestions, reference matching.
+
+<br>
+
+**Conversation Memory**
+
+Multi-turn chat with full context. Ask follow-up questions. The AI remembers your track analysis throughout the session.
 
 <br>
 
@@ -240,6 +292,52 @@ message: How can I improve the low end?
 
 <br>
 
+### Stem Separator
+
+<br>
+
+**Separate**
+
+```http
+POST /separate
+
+model: htdemucs
+artifact_reduction: 30
+```
+
+| Model | Stems | Description |
+|-------|-------|-------------|
+| `htdemucs` | 4 | Drums, bass, vocals, other |
+| `htdemucs_ft` | 4 | Fine-tuned, better quality |
+| `htdemucs_6s` | 6 | Adds guitar and piano |
+
+<br>
+
+**Download Stems**
+
+```http
+GET /stems/{job_id}/{filename}
+```
+
+<br>
+
+### MIDI Generator
+
+<br>
+
+**Convert to MIDI**
+
+```http
+POST /api/generate-midi
+
+onset_threshold: 0.5
+frame_threshold: 0.3
+```
+
+Returns MIDI file with detected notes, velocities, and timing.
+
+<br>
+
 ---
 
 <br>
@@ -248,24 +346,63 @@ message: How can I improve the low end?
 
 <br>
 
-Educational content built into the platform:
+Learn while you work. Educational content built into the platform.
 
 <br>
 
-**Song Structures** — EDM, Pop, Hip-Hop, K-Pop templates with section purposes and energy curves.
+### Song Structures
 
-**Music Theory** — Modes, progressions, Nashville numbers. Learn the language of music.
+Templates for every genre with section timing and energy curves:
 
-**Rhythm Patterns** — Grid notation for every genre. Swing values. Humanization techniques.
-
-**Signal Chains** — Professional processing chains for vocals, drums, and mastering.
+| Genre | Sections | BPM Range |
+|-------|----------|-----------|
+| EDM/House | Intro → Build → Drop → Break → Drop → Outro | 124-128 |
+| Pop | Intro → Verse → Pre → Chorus → Verse → Chorus → Bridge → Chorus | 100-130 |
+| Hip-Hop | Intro → Verse → Hook → Verse → Hook → Bridge → Hook | 85-115 |
+| K-Pop | Intro → Verse → Pre → Chorus → Dance Break → Bridge → Chorus | 100-140 |
 
 <br>
 
-Keep it synced:
+### Music Theory
+
+Interactive learning built into the chord detector:
+
+- **Circle of Fifths** — Visual key relationships
+- **Nashville Numbers** — Industry-standard notation (1, 4, 5, 6m)
+- **Modal Theory** — Ionian through Locrian with example progressions
+- **Chord Extensions** — 7ths, 9ths, suspended, altered
+
+<br>
+
+### Signal Chains
+
+Professional processing chains you can learn and apply:
+
+**Vocals** — HPF 80Hz → De-esser → Comp 3:1 → EQ → Reverb → Delay
+
+**Drums** — Parallel comp → Transient shaper → Bus comp → Saturation
+
+**Master** — EQ → Multiband → Limiter → Dither
+
+<br>
+
+### Rhythm Patterns
+
+Grid notation for programming realistic drums:
+
+- Genre-specific patterns (Four-on-floor, Boom-bap, Trap, Breakbeat)
+- Swing percentages (50% straight → 67% triplet feel)
+- Ghost note placement
+- Humanization velocity curves
+
+<br>
+
+Keep Knowledge Lab synced with the backend:
 
 ```bash
-./sync-knowledge-lab.sh
+./sync-knowledge-lab.sh          # Full sync
+./sync-knowledge-lab.sh --test   # Validate only
+./sync-knowledge-lab.sh --check  # Check if sync needed
 ```
 
 <br>

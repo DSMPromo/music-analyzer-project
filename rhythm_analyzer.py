@@ -472,14 +472,44 @@ def correct_half_time_spectral(y: np.ndarray, sr: int, beat_result: BeatResult) 
     Analyzes hi-hat frequency band transient density - if there are
     significantly more transients than expected for the detected BPM,
     the tempo is likely half-time and should be doubled.
+
+    Also triggers on: low BPM (<95) + low confidence (<50%) - common half-time pattern.
     """
     detected_bpm = beat_result.bpm
     confidence = beat_result.bpm_confidence
 
-    # Only apply correction for low confidence, low BPM detections
+    # Skip if already fast enough or very confident
     if detected_bpm >= 100 or confidence > 0.7:
         logger.info(f'Spectral half-time check: BPM {detected_bpm:.1f} @ {confidence:.0%} confidence - no correction needed')
         return beat_result
+
+    # HEURISTIC 1: Low BPM + Low confidence = likely half-time
+    # This is very common for synth-pop, EDM, and modern pop
+    if detected_bpm < 95 and confidence < 0.5:
+        corrected_bpm = detected_bpm * 2
+        logger.info(f'HALF-TIME DETECTED via low-confidence heuristic: {detected_bpm:.1f} BPM @ {confidence:.0%} -> {corrected_bpm:.1f} BPM')
+
+        # Interpolate beats
+        old_beats = beat_result.beats
+        new_beats = []
+        for i in range(len(old_beats) - 1):
+            new_beats.append(old_beats[i])
+            new_beats.append((old_beats[i] + old_beats[i + 1]) / 2)
+        if old_beats:
+            new_beats.append(old_beats[-1])
+
+        new_downbeats = [
+            {'time': float(new_beats[i]), 'beat_position': (i % 4) + 1}
+            for i in range(len(new_beats))
+        ]
+
+        return BeatResult(
+            bpm=corrected_bpm,
+            bpm_confidence=min(confidence * 1.3, 0.7),
+            beats=new_beats,
+            downbeats=new_downbeats,
+            time_signature=beat_result.time_signature
+        )
 
     try:
         from scipy.signal import butter, sosfilt
@@ -2030,19 +2060,32 @@ def detect_drums_with_sensitivity(
 
     # === SNARE ===
     snare_sens = sensitivities.get('snare', 0.5)
-    snare_threshold = base_mid * (0.8 + snare_sens * 0.8)
     snare_hits = []
     snare_energies = []
 
+    # Collect all snare position energies first for adaptive threshold
+    snare_positions = []
     for i, beat_time in enumerate(beats):
         beat_in_bar = i % time_signature
-        if beat_in_bar in [1, 3]:
+        if beat_in_bar in [1, 3]:  # Beats 2 and 4
             mid_energy = get_energy_at_time(y_mid, sr, beat_time)
-            low_energy = get_energy_at_time(y_low, sr, beat_time)
+            high_energy = get_energy_at_time(y_high, sr, beat_time)
+            snare_positions.append({'time': beat_time, 'mid': mid_energy, 'high': high_energy})
             snare_energies.append({'time': beat_time, 'energy': mid_energy})
 
-            if mid_energy > snare_threshold and mid_energy > low_energy * 0.5:
-                snare_hits.append({'time': float(beat_time), 'type': 'snare', 'confidence': min(mid_energy / snare_threshold, 1.0), 'energy': mid_energy})
+    # Use adaptive percentile-based threshold (like kicks)
+    all_snare_mids = [p['mid'] for p in snare_positions]
+    snare_percentile = 30 + snare_sens * 30  # 30-60th percentile based on sensitivity
+    snare_threshold = np.percentile(all_snare_mids, snare_percentile) if all_snare_mids else base_mid
+
+    # Detect snares with adaptive threshold
+    for pos in snare_positions:
+        mid_energy = pos['mid']
+        high_energy = pos['high']
+        # Snare = mid energy above threshold, OR combined mid+high energy
+        combined_energy = mid_energy + high_energy * 0.3
+        if combined_energy > snare_threshold:
+            snare_hits.append({'time': float(pos['time']), 'type': 'snare', 'confidence': min(combined_energy / snare_threshold, 1.0), 'energy': mid_energy})
 
     results['snare'] = {
         'hits': snare_hits,
@@ -2055,24 +2098,29 @@ def detect_drums_with_sensitivity(
     }
 
     # === CLAP ===
+    # Claps are detected at beats 2 & 4, distinguished from snares by higher frequencies
     clap_sens = sensitivities.get('clap', 0.5)
-    clap_threshold_mid = base_mid * (1.0 + clap_sens * 0.8)
-    clap_threshold_high = base_high * (0.8 + clap_sens * 0.6)
     clap_hits = []
 
-    for i, beat_time in enumerate(beats):
-        beat_in_bar = i % time_signature
-        if beat_in_bar in [1, 3]:
-            mid_energy = get_energy_at_time(y_mid, sr, beat_time)
-            high_energy = get_energy_at_time(y_high, sr, beat_time)
+    # Use adaptive threshold based on high-frequency content at snare positions
+    clap_highs = [get_energy_at_time(y_high, sr, p['time']) for p in snare_positions]
+    clap_threshold_high = np.percentile(clap_highs, 40 + clap_sens * 30) if clap_highs else base_high
 
-            if mid_energy > clap_threshold_mid and high_energy > clap_threshold_high:
-                clap_hits.append({'time': float(beat_time), 'type': 'clap', 'confidence': 0.85, 'energy': mid_energy})
+    for pos in snare_positions:
+        high_energy = get_energy_at_time(y_high, sr, pos['time'])
+        mid_energy = pos['mid']
+
+        # Clap has significant high-frequency content (more than snare)
+        # Ratio of high to mid energy distinguishes clap from snare
+        high_mid_ratio = high_energy / (mid_energy + 1e-10)
+
+        if high_energy > clap_threshold_high and high_mid_ratio > 0.3:
+            clap_hits.append({'time': float(pos['time']), 'type': 'clap', 'confidence': min(high_energy / clap_threshold_high, 1.0), 'energy': high_energy})
 
     results['clap'] = {
         'hits': clap_hits,
-        'threshold': clap_threshold_mid,
-        'energy_stats': {'median': float(base_mid)}
+        'threshold': float(clap_threshold_high),
+        'energy_stats': {'median': float(base_high)}
     }
 
     # === HIHAT ===

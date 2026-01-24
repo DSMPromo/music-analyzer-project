@@ -166,6 +166,7 @@ function App() {
     adjustSwing,
     resetToDetected: resetRhythmToDetected,
     clearAnalysis: clearRhythmAnalysis,
+    replaceHits: replaceRhythmHits,
     // Per-instrument actions
     updateInstrumentSettings,
     quantizeSingleInstrument,
@@ -871,14 +872,9 @@ function App() {
             audioFile={audioFile}
             initialBpm={effectiveTempo}
             onHitsVerified={(result) => {
-              // Update rhythm analysis state with verified hits
+              // Replace rhythm analysis hits with verified hits
               if (result.hits) {
-                // Merge verified hits into current drum hits
-                Object.keys(result.hits).forEach(drumType => {
-                  result.hits[drumType].forEach(hit => {
-                    addDrumHit(drumType, hit.timestamp, false);
-                  });
-                });
+                replaceRhythmHits(result.hits);
               }
               setShowVerificationPanel(false);
             }}

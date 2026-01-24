@@ -876,6 +876,13 @@ export function useRhythmAnalysis() {
     currentFileRef.current = null;
   }, []);
 
+  /**
+   * Replace all hits with new hits (used by verification panel)
+   */
+  const replaceHits = useCallback((newHits) => {
+    setHits(newHits);
+  }, []);
+
   // Check service availability on mount (without setting analyzing state)
   useEffect(() => {
     const checkOnMount = async () => {
@@ -941,6 +948,7 @@ export function useRhythmAnalysis() {
     deleteHit,
     resetToDetected,
     clearAnalysis,
+    replaceHits,
 
     // Per-instrument actions
     updateInstrumentSettings,

@@ -1,5 +1,7 @@
 # Service Incidents Log
 
+> **Related:** See [TICKETS.md](./TICKETS.md) for issue tracking
+
 ## 2026-01-23: Chord Detection & Rhythm Settings Issues
 
 ### Incident #001: Advanced Chord Detection Not Working in Full Mix Mode

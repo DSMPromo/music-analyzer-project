@@ -5619,8 +5619,8 @@ async def detect_adaptive(
 
         # Mark quiet bars (below 60% of median)
         for b in bar_energies:
-            b['is_quiet'] = b['rms'] < median_rms * 0.6
-            b['relative_energy'] = round(b['rms'] / median_rms, 3) if median_rms > 0 else 0
+            b['is_quiet'] = bool(b['rms'] < median_rms * 0.6)  # Convert numpy.bool to Python bool
+            b['relative_energy'] = round(float(b['rms'] / median_rms), 3) if median_rms > 0 else 0
 
         quiet_bars = [b['bar'] for b in bar_energies if b['is_quiet']]
         logger.info(f'Quiet bars detected: {quiet_bars[:20]}...' if len(quiet_bars) > 20 else f'Quiet bars: {quiet_bars}')
@@ -5735,14 +5735,14 @@ async def detect_adaptive(
 
                     if energy > threshold:
                         new_hits.append({
-                            'time': round(hit_time, 4),
+                            'time': round(float(hit_time), 4),
                             'type': drum_type,
-                            'confidence': round(min(energy / threshold, 1.0), 3),
-                            'bar': bar_num,
-                            'grid_position': grid_pos,
-                            'energy': round(energy, 5),
-                            'threshold_used': round(threshold, 5),
-                            'is_quiet_bar': is_quiet,
+                            'confidence': round(float(min(energy / threshold, 1.0)), 3),
+                            'bar': int(bar_num),
+                            'grid_position': int(grid_pos),
+                            'energy': round(float(energy), 5),
+                            'threshold_used': round(float(threshold), 5),
+                            'is_quiet_bar': bool(is_quiet),
                             'source': 'adaptive_detection',
                         })
                         existing_times.add(round(hit_time, 3))
@@ -5760,17 +5760,17 @@ async def detect_adaptive(
 
         return {
             'success': True,
-            'total_bars': total_bars,
+            'total_bars': int(total_bars),
             'bars_scanned': len(bars_to_scan),
-            'quiet_bars': quiet_bars,
-            'median_bar_energy': round(median_rms, 5),
+            'quiet_bars': [int(b) for b in quiet_bars],
+            'median_bar_energy': round(float(median_rms), 5),
             'bar_energies': bar_energies,
             'new_hits': new_hits,
             'total_new_hits': len(new_hits),
             'hits_by_type': hits_by_type,
             'settings': {
-                'bpm': bpm,
-                'sensitivity_boost': sensitivity_boost,
+                'bpm': float(bpm),
+                'sensitivity_boost': float(sensitivity_boost),
                 'target_bars': target_bars,
             }
         }

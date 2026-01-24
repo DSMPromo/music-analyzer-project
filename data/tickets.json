@@ -554,7 +554,30 @@
         }
       ],
       "relatedIncidents": ["TICKET-024", "TICKET-025"]
+    },
+    {
+      "id": "TICKET-027",
+      "title": "Adaptive Detection JSON Serialization Error",
+      "description": "The /detect-adaptive endpoint returns Internal Server Error due to numpy types not being serializable to JSON. FastAPI's jsonable_encoder fails with ValueError: numpy.bool object is not iterable.",
+      "priority": "High",
+      "component": "Rhythm Detection",
+      "status": "RESOLVED",
+      "created": "2026-01-24",
+      "updated": "2026-01-24",
+      "resolved": "2026-01-24",
+      "steps": "1. Call POST /detect-adaptive with audio file\n2. Endpoint processes successfully but fails on response serialization\n3. Returns 500 Internal Server Error",
+      "expected": "JSON response with detection results",
+      "actual": "500 Internal Server Error - ValueError: numpy.bool object is not iterable",
+      "rootCause": "numpy.bool values from comparisons (is_quiet = rms < threshold) and numpy.float64/int64 types not auto-converted to Python native types",
+      "resolution": "Explicitly convert all numpy types to Python native types in response:\n- bool(is_quiet) for numpy.bool\n- float(value) for numpy.float64\n- int(value) for numpy.int64\n- [int(b) for b in quiet_bars] for numpy int arrays",
+      "notes": [
+        {
+          "text": "FastAPI's jsonable_encoder cannot serialize numpy types. Always convert to native Python types before returning.",
+          "timestamp": "2026-01-24T16:00:00.000Z"
+        }
+      ],
+      "relatedIncidents": ["TICKET-026"]
     }
   ],
-  "nextId": 27
+  "nextId": 28
 }

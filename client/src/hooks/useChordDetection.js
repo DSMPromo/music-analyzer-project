@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
@@ -36,10 +36,13 @@ function matchChord(chromagram, root, intervals) {
 export function useChordDetection() {
   const [currentChord, setCurrentChord] = useState(null);
   const [chordHistory, setChordHistory] = useState([]);
+  const [maxChromaValue, setMaxChromaValue] = useState(0);
 
   const analyzeChromagram = useCallback((chromagram) => {
     // Check if chromagram is too quiet
     const maxVal = Math.max(...chromagram);
+    setMaxChromaValue(maxVal);
+
     if (maxVal < 0.1) {
       setCurrentChord(null);
       return null;
@@ -97,12 +100,33 @@ export function useChordDetection() {
 
   const clearHistory = useCallback(() => {
     setChordHistory([]);
+    setMaxChromaValue(0);
   }, []);
+
+  // Aggregate confidence calculations for verification
+  const avgConfidence = useMemo(() => {
+    if (chordHistory.length === 0) return 0;
+    const sum = chordHistory.reduce((acc, chord) => acc + (chord.confidence || 0), 0);
+    return sum / chordHistory.length;
+  }, [chordHistory]);
+
+  // Get verification data object
+  const verificationData = useMemo(() => ({
+    chordHistory,
+    avgConfidence,
+    maxChromaValue,
+    uniqueChords: [...new Set(chordHistory.map(c => c.symbol))].length,
+    totalChords: chordHistory.length,
+  }), [chordHistory, avgConfidence, maxChromaValue]);
 
   return {
     currentChord,
     chordHistory,
     analyzeChromagram,
     clearHistory,
+    // Verification exports
+    avgConfidence,
+    maxChromaValue,
+    verificationData,
   };
 }

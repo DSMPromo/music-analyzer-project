@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import './App.css';
 import AudioInputManager from './components/AudioInputManager';
 import SpectrumAnalyzer from './components/SpectrumAnalyzer';
@@ -12,13 +12,23 @@ import ReferenceCompare from './components/ReferenceCompare';
 import GeminiMixAnalyzer from './components/GeminiMixAnalyzer';
 import StemSeparator from './components/StemSeparator';
 import AnalysisHistory from './components/AnalysisHistory';
+import AudioOptimizer from './components/AudioOptimizer';
+import VerificationController from './components/VerificationController';
 import { useAudioContext } from './hooks/useAudioContext';
 import { useFFTAnalysis } from './hooks/useFFTAnalysis';
 import { useSpectrogramGenerator } from './hooks/useSpectrogramGenerator';
 import { useMixAnalysis } from './hooks/useMixAnalysis';
 import { useDrumDetection } from './hooks/useDrumDetection';
+import { useRhythmAnalysis, ANALYSIS_STATES } from './hooks/useRhythmAnalysis';
 import { useAnalysisCache } from './hooks/useAnalysisCache';
+import { useChordDetection } from './hooks/useChordDetection';
+import { useVerificationWorkflow } from './hooks/useVerificationWorkflow';
 import { generateFileFingerprint } from './utils/analysisCache';
+import { STAGES, STAGE_STATUS } from './utils/verificationUtils';
+import FixGridPanel from './components/FixGridPanel';
+import RhythmGrid from './components/RhythmGrid';
+import RhythmGridPro from './components/RhythmGridPro';
+import { KnowledgeLab } from './components/knowledgelab';
 
 function App() {
   const [audioFile, setAudioFile] = useState(null);
@@ -95,6 +105,80 @@ function App() {
     tapTempo,
   } = useDrumDetection(estimatedTempo || 120);
 
+  // Python rhythm analysis hook (accurate, runs in background)
+  const {
+    analysisState: rhythmAnalysisState,
+    analysisProgress: rhythmProgress,
+    analysisError: rhythmError,
+    isAnalyzing: isRhythmAnalyzing,
+    serviceAvailable: rhythmServiceAvailable,
+    bpm: pythonBpm,
+    bpmConfidence: pythonBpmConfidence,
+    bpmLocked: pythonBpmLocked,
+    beats: pythonBeats,
+    downbeats: pythonDownbeats,
+    timeSignature: pythonTimeSignature,
+    hits: pythonHits,
+    swing: pythonSwing,
+    swingSettings: pythonSwingSettings,
+    analysisMethod: rhythmAnalysisMethod,
+    analysisSource: rhythmAnalysisSource,
+    detectedGenre: rhythmDetectedGenre,
+    genreConfidence: rhythmGenreConfidence,
+    patternFilterApplied: rhythmPatternFilterApplied,
+    hitsBeforeFilter: rhythmHitsBeforeFilter,
+    hitsAfterFilter: rhythmHitsAfterFilter,
+    analyzeFile: analyzeRhythmFile,
+    recalculateBPM: recalculateRhythmBPM,
+    setManualBPM: setRhythmManualBPM,
+    toggleBpmLock: toggleRhythmBpmLock,
+    shiftDownbeatPosition,
+    adjustSwing,
+    resetToDetected: resetRhythmToDetected,
+    clearAnalysis: clearRhythmAnalysis,
+    // Per-instrument actions
+    updateInstrumentSettings,
+    quantizeSingleInstrument,
+    alignDownbeatToFirstKick,
+    snapToPosition,
+    applyPreset,
+    generatePattern,
+    clearInstrument,
+    // Fix Grid panel
+    isFixGridOpen,
+    pendingChanges: fixGridPendingChanges,
+    openFixGrid,
+    closeFixGrid,
+    applyFixGridChanges,
+    setPendingChanges: setFixGridPendingChanges,
+    // Pattern matching
+    patternMatch,
+    patternMatchLoading,
+    matchPatternFromKnowledge,
+    // Quiet hit prediction
+    isFindingQuietHits,
+    quietHitResult,
+    findQuietHits,
+  } = useRhythmAnalysis();
+
+  // Use Python results when available, fall back to JS detection
+  const usePythonRhythm = rhythmAnalysisState === ANALYSIS_STATES.COMPLETE && pythonBpm;
+  const effectiveDrumHits = usePythonRhythm ? pythonHits : drumHits;
+  const effectiveTempo = usePythonRhythm ? pythonBpm : drumTempo;
+  const effectiveTempoConfidence = usePythonRhythm ? pythonBpmConfidence : drumTempoConfidence;
+
+  // Chord detection hook (for verification system)
+  const {
+    currentChord: appCurrentChord,
+    chordHistory: appChordHistory,
+    analyzeChromagram: appAnalyzeChromagram,
+    clearHistory: appClearChordHistory,
+    verificationData: chordVerificationData,
+  } = useChordDetection();
+
+  // Verification workflow hook
+  const verificationWorkflow = useVerificationWorkflow();
+
   // Analysis cache hook
   const {
     history: analysisHistory,
@@ -114,24 +198,39 @@ function App() {
   const handleAudioSelect = async (file, forceReanalyze = false) => {
     setAudioFile(file);
 
-    // Create object URL for audio playback
-    if (audioUrl) {
-      URL.revokeObjectURL(audioUrl);
-    }
-    const url = URL.createObjectURL(file);
-    setAudioUrl(url);
-
     // Reset state
     setIsPlaying(false);
     setCurrentTime(0);
     setLoadedFromCache(false);
+
+    // Import and use conversion utility
+    const { convertToWav } = await import('./utils/audioConversion');
+
+    // Create object URL for audio playback (converts if needed)
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+    }
+
+    let url;
+    let fileForDecoding = file;
+
+    try {
+      const result = await convertToWav(file);
+      url = result.url;
+      fileForDecoding = result.file;
+    } catch (err) {
+      console.error('Conversion error:', err);
+      url = URL.createObjectURL(file);
+    }
+
+    setAudioUrl(url);
 
     // First, decode audio to get duration for cache lookup
     let decodedBuffer = null;
     try {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       const tempContext = new AudioContextClass({ sampleRate: 44100 });
-      const arrayBuffer = await file.arrayBuffer();
+      const arrayBuffer = await fileForDecoding.arrayBuffer();
       decodedBuffer = await tempContext.decodeAudioData(arrayBuffer);
       await tempContext.close();
     } catch (err) {
@@ -203,7 +302,13 @@ function App() {
     // Start drum analysis
     startDrumAnalysis();
 
-    audioRef.current.play();
+    // Handle play() promise to avoid "interrupted by pause()" errors
+    audioRef.current.play().catch(e => {
+      // AbortError is expected when pause() is called before play() resolves
+      if (e.name !== 'AbortError') {
+        console.error('Playback error:', e);
+      }
+    });
     setIsPlaying(true);
   };
 
@@ -271,6 +376,39 @@ function App() {
       resetDrumAnalysis();
     }
   }, [audioFile, resetDrumAnalysis]);
+
+  // Reset verification workflow when audio file changes
+  useEffect(() => {
+    if (audioFile) {
+      verificationWorkflow.resetWorkflow();
+      appClearChordHistory();
+    }
+  }, [audioFile, verificationWorkflow.resetWorkflow, appClearChordHistory]);
+
+  // Analyze chromagram for app-level chord detection (for verification)
+  useEffect(() => {
+    if (isPlaying && chromagram && chromagram.length > 0) {
+      appAnalyzeChromagram(chromagram);
+    }
+  }, [isPlaying, chromagram, appAnalyzeChromagram]);
+
+  // Create rhythm data object for verification system
+  const rhythmVerificationData = useMemo(() => ({
+    bpm: effectiveTempo,
+    bpmConfidence: effectiveTempoConfidence,
+    hits: effectiveDrumHits,
+    patternMatch: patternMatch,
+    swing: pythonSwing,
+    timeSignature: pythonTimeSignature,
+  }), [effectiveTempo, effectiveTempoConfidence, effectiveDrumHits, patternMatch, pythonSwing, pythonTimeSignature]);
+
+  // Trigger Python rhythm analysis when audio file is loaded
+  useEffect(() => {
+    if (audioFile && rhythmServiceAvailable) {
+      // Run Python analysis in background for accurate results
+      analyzeRhythmFile(audioFile, { useStem: false, mergeWithJs: null });
+    }
+  }, [audioFile, rhythmServiceAvailable, analyzeRhythmFile]);
 
   // Analyze key and tempo from full audio buffer when loaded (lightweight version)
   useEffect(() => {
@@ -600,7 +738,7 @@ function App() {
                 <strong>Key:</strong> {detectedKey || 'Detecting...'}
               </div>
               <div className="info-item">
-                <strong>Tempo:</strong> {estimatedTempo ? `~${estimatedTempo} BPM` : 'Detecting...'}
+                <strong>Tempo:</strong> {effectiveTempo ? `${Math.round(effectiveTempo)} BPM` : (estimatedTempo ? `~${estimatedTempo} BPM` : 'Detecting...')}
               </div>
               <div className="info-item">
                 <strong>Peak Freq:</strong> {Math.round(isPlaying ? peakFrequency : (staticPeakFreq || 0))} Hz
@@ -609,6 +747,38 @@ function App() {
                 <strong>Level:</strong> {((isPlaying ? rmsLevel : (staticRmsLevel || 0)) * 100).toFixed(1)}%
               </div>
             </div>
+          </section>
+        )}
+
+        {/* Verification Controller Section */}
+        {audioBuffer && (
+          <section className="verification-section">
+            <VerificationController
+              workflow={verificationWorkflow}
+              audioBuffer={audioBuffer}
+              rhythmData={rhythmVerificationData}
+              isRhythmAnalyzing={isRhythmAnalyzing}
+              rhythmProgress={rhythmProgress}
+              rhythmAnalysisMethod={rhythmAnalysisMethod}
+              onOpenFixGrid={openFixGrid}
+              onReanalyzeRhythm={() => {
+                if (audioFile) {
+                  analyzeRhythmFile(audioFile, { useStem: false, mergeWithJs: null });
+                }
+              }}
+              onReanalyzeRhythmWithAI={() => {
+                if (audioFile) {
+                  analyzeRhythmFile(audioFile, { useAI: true });
+                }
+              }}
+              onFindQuietHits={() => {
+                if (audioFile) {
+                  findQuietHits(audioFile, { startBar: 17, energyMultiplier: 0.3 });
+                }
+              }}
+              isFindingQuietHits={isFindingQuietHits}
+              chordData={chordVerificationData}
+            />
           </section>
         )}
 
@@ -688,18 +858,94 @@ function App() {
             showDiagram={true}
             detectedKey={detectedKey}
             tempo={estimatedTempo}
-            // Drum detection props
-            drumHits={drumHits}
-            drumTempo={drumTempo}
-            drumTempoConfidence={drumTempoConfidence}
+            // Rhythmic mode props
+            drumHits={effectiveDrumHits}
+            currentTimeMs={currentTime * 1000}
+            isPlaying={isPlaying}
+          />
+        </section>
+
+        {/* NEW: RhythmGridPro - DAW-style with Logic Pro principles */}
+        <section className="rhythm-section">
+          <RhythmGridPro
+            bpm={effectiveTempo || 120}
+            downbeatTime={pythonDownbeats?.[0]?.time || 0}
+            audioDuration={duration}
+            currentTime={currentTime}
+            isPlaying={isPlaying}
+            beatsPerBar={pythonTimeSignature || 4}
+            subdivisions={4}
+            barsPerPage={4}
+            hits={(() => {
+              // Convert effectiveDrumHits to flat array format
+              const flatHits = [];
+              Object.entries(effectiveDrumHits || {}).forEach(([type, hits]) => {
+                hits.forEach(hit => {
+                  flatHits.push({
+                    time: hit.timestamp / 1000, // ms to seconds
+                    type,
+                    confidence: hit.confidence || 0.8,
+                    isManual: hit.isManual || false,
+                  });
+                });
+              });
+              return flatHits;
+            })()}
+            onHitAdd={(hit) => {
+              // Convert back to old format
+              const bar = Math.floor(hit.time / ((60 / effectiveTempo) * (pythonTimeSignature || 4)));
+              const beatInBar = Math.floor((hit.time % ((60 / effectiveTempo) * (pythonTimeSignature || 4))) / (60 / effectiveTempo));
+              const subBeat = Math.round(((hit.time % (60 / effectiveTempo)) / (60 / effectiveTempo)) * 4);
+              addDrumHit(hit.type, bar, beatInBar, subBeat);
+            }}
+            onHitRemove={(hit) => {
+              removeDrumHit(hit.type, hit.time * 1000, hit.isManual);
+            }}
+            onSeek={(time) => {
+              if (audioRef.current) {
+                audioRef.current.currentTime = time;
+              }
+            }}
+            onAnalyzeWithAI={() => {
+              if (audioFile) {
+                analyzeRhythmFile(audioFile, { useAI: true });
+              }
+            }}
+            analysisSource={rhythmAnalysisSource}
+            detectedGenre={rhythmDetectedGenre}
+            genreConfidence={rhythmGenreConfidence}
+            isAnalyzing={isRhythmAnalyzing}
+            analysisProgress={rhythmProgress}
+            patternFilterApplied={rhythmPatternFilterApplied}
+            hitsBeforeFilter={rhythmHitsBeforeFilter}
+            hitsAfterFilter={rhythmHitsAfterFilter}
+          />
+        </section>
+
+        {/* OLD: Rhythm Grid - keeping for comparison */}
+        <section className="rhythm-section" style={{ opacity: 0.5 }}>
+          <div style={{ padding: '0.5rem', background: '#333', color: '#888', fontSize: '0.8rem' }}>
+            OLD GRID (for comparison) - will be removed
+          </div>
+          <RhythmGrid
+            drumHits={effectiveDrumHits}
+            currentBeat={0}
+            currentBar={0}
+            beatsPerBar={pythonTimeSignature || 4}
+            barsToShow={8}
+            subdivision={4}
+            tempo={effectiveTempo}
+            tempoConfidence={effectiveTempoConfidence}
             detectedPattern={detectedPattern}
             patternConfidence={patternConfidence}
             isPlaying={isPlaying}
             currentTimeMs={currentTime * 1000}
-            onDrumCellClick={(drumType, bar, beat, subBeat) => {
+            audioDuration={duration}
+            onCellClick={(drumType, bar, beat, subBeat) => {
               // Toggle hit - if exists, remove; if not, add
-              const hit = drumHits[drumType]?.find(h => {
-                const targetTime = (bar * 4 + beat + subBeat / 4) * (60000 / drumTempo);
+              const hitsToCheck = effectiveDrumHits;
+              const hit = hitsToCheck[drumType]?.find(h => {
+                const targetTime = (bar * 4 + beat + subBeat / 4) * (60000 / effectiveTempo);
                 return Math.abs(h.timestamp - targetTime) < 50;
               });
               if (hit) {
@@ -708,12 +954,53 @@ function App() {
                 addDrumHit(drumType, bar, beat, subBeat);
               }
             }}
-            onDrumClearRow={clearDrumRow}
-            onDrumClearAll={clearAllDrums}
-            onDrumTempoChange={setDrumTempo}
-            onDrumTapTempo={tapTempo}
+            onClearRow={clearDrumRow}
+            onClearAll={clearAllDrums}
+            onTempoChange={usePythonRhythm ? setRhythmManualBPM : setDrumTempo}
+            onTapTempo={tapTempo}
+            // Python rhythm analysis props
+            rhythmAnalysisState={rhythmAnalysisState}
+            rhythmProgress={rhythmProgress}
+            rhythmError={rhythmError}
+            isRhythmAnalyzing={isRhythmAnalyzing}
+            rhythmServiceAvailable={rhythmServiceAvailable}
+            usePythonRhythm={usePythonRhythm}
+            rhythmAnalysisMethod={rhythmAnalysisMethod}
+            swing={pythonSwing}
+            onOpenFixGrid={openFixGrid}
+            // Analysis source and genre
+            analysisSource={rhythmAnalysisSource}
+            detectedGenre={rhythmDetectedGenre}
+            genreConfidence={rhythmGenreConfidence}
+            // Pattern matching from Knowledge Lab
+            patternMatch={patternMatch}
+            patternMatchLoading={patternMatchLoading}
+            onMatchPattern={matchPatternFromKnowledge}
           />
         </section>
+
+        {/* Fix Grid Panel */}
+        <FixGridPanel
+          isOpen={isFixGridOpen}
+          onClose={closeFixGrid}
+          pendingChanges={fixGridPendingChanges}
+          setPendingChanges={setFixGridPendingChanges}
+          onApply={applyFixGridChanges}
+          onReset={resetRhythmToDetected}
+          onRecalculateBPM={recalculateRhythmBPM}
+          onShiftDownbeat={shiftDownbeatPosition}
+          onAlignToFirstKick={alignDownbeatToFirstKick}
+          onSnapToPosition={snapToPosition}
+          onQuantizeInstrument={quantizeSingleInstrument}
+          onGeneratePattern={generatePattern}
+          onClearInstrument={clearInstrument}
+          onApplyPreset={applyPreset}
+          bpmConfidence={pythonBpmConfidence}
+          timeSignature={pythonTimeSignature}
+          analysisState={rhythmAnalysisState}
+          analysisMethod={rhythmAnalysisMethod}
+          hasKicks={(pythonHits?.kick?.length || 0) > 0}
+        />
 
         {audioFile && (
           <section className="analysis-section">
@@ -765,9 +1052,43 @@ function App() {
           />
         </section>
 
+        {/* AI Audio Optimizer Section */}
+        <section className="optimizer-section">
+          <AudioOptimizer
+            audioFile={audioFile}
+            audioBuffer={audioBuffer}
+            audioMetrics={mixAnalysisResults?.metrics}
+            spectrogramData={spectrogramData}
+            problemFrequencies={mixAnalysisResults?.problems || []}
+            detectedBpm={effectiveTempo || estimatedTempo || 120}
+          />
+        </section>
+
         {/* Stem Separator Section */}
         <section className="stem-section">
           <StemSeparator audioFile={audioFile} />
+        </section>
+
+        {/* Knowledge Lab Section */}
+        <section className="knowledge-lab-section">
+          <KnowledgeLab
+            analysisContext={{
+              lufs: mixAnalysisResults?.loudness?.integratedLUFS,
+              dynamicRange: mixAnalysisResults?.metrics?.dynamicRange,
+              problems: mixAnalysisResults?.problems?.map(p => p.type) || [],
+              lowMidEnergy: mixAnalysisResults?.metrics?.lowMidEnergy,
+              presenceEnergy: mixAnalysisResults?.metrics?.presenceEnergy,
+              bassPhase: mixAnalysisResults?.metrics?.stereo?.correlation,
+              hasVocals: false // Could be detected from stems later
+            }}
+            detectedGenre={null} // Could add genre detection
+            bpm={effectiveTempo || estimatedTempo}
+            detectedKey={detectedKey}
+            onApplyStructure={(structure) => {
+              console.log('Structure exported:', structure);
+              // Could integrate with RhythmGrid markers
+            }}
+          />
         </section>
       </main>
 

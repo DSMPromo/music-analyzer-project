@@ -1,0 +1,3044 @@
+#!/usr/bin/env python3
+"""
+Rhythm Analyzer Service
+Port: 56403
+
+3-stage pipeline for accurate rhythm detection:
+1. Beat/Downbeat detection using madmom CNN
+2. Onset detection using madmom RNN
+3. Drum hit classification using ML model (with rule-based fallback)
+
+Usage:
+    ./venv/bin/python rhythm_analyzer.py
+"""
+
+import os
+import sys
+import tempfile
+import logging
+from pathlib import Path
+from typing import Optional, List, Dict, Any, Tuple
+from dataclasses import dataclass
+import uuid
+import time
+
+import numpy as np
+import librosa
+import soundfile as sf
+from scipy import signal
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import io
+import base64
+import json
+import re
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import uvicorn
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Try to import Google Generative AI
+GEMINI_AVAILABLE = False
+genai = None
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+    logger.info('Google Generative AI loaded')
+except ImportError:
+    logger.warning('google-generativeai not available, Gemini detection disabled')
+
+# Service configuration
+PORT = 56403
+HOST = '0.0.0.0'
+TEMP_DIR = Path(tempfile.gettempdir()) / 'music-analyzer-rhythm'
+TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
+# Try to import madmom (optional, will use librosa fallback if not available)
+MADMOM_AVAILABLE = False
+try:
+    import madmom
+    from madmom.features.beats import RNNBeatProcessor, DBNBeatTrackingProcessor
+    from madmom.features.downbeats import RNNDownBeatProcessor, DBNDownBeatTrackingProcessor
+    from madmom.features.onsets import RNNOnsetProcessor
+    MADMOM_AVAILABLE = True
+    logger.info('madmom loaded successfully - using CNN-based detection')
+except ImportError as e:
+    logger.warning(f'madmom not available ({e}), using librosa fallback')
+
+# Try to import sklearn for ML classification
+SKLEARN_AVAILABLE = False
+classifier = None
+try:
+    from sklearn.ensemble import RandomForestClassifier
+    import joblib
+    SKLEARN_AVAILABLE = True
+
+    # Try to load pre-trained classifier
+    CLASSIFIER_PATH = Path(__file__).parent / 'drum_classifier.pkl'
+    if CLASSIFIER_PATH.exists():
+        classifier = joblib.load(CLASSIFIER_PATH)
+        logger.info('Loaded pre-trained drum classifier')
+    else:
+        logger.info('No pre-trained classifier found, will use rule-based classification')
+except ImportError as e:
+    logger.warning(f'sklearn not available ({e}), using rule-based classification')
+
+
+# =============================================================================
+# Pydantic Models
+# =============================================================================
+
+class BeatResult(BaseModel):
+    """Result of beat/downbeat detection"""
+    bpm: float
+    bpm_confidence: float
+    beats: List[float]  # Beat times in seconds
+    downbeats: List[Dict[str, Any]]  # {time: float, beat_position: int}
+    time_signature: int  # Beats per bar (3 or 4)
+
+
+class DrumHit(BaseModel):
+    """Single detected drum hit"""
+    time: float  # Time in seconds
+    type: str  # kick, snare, hihat, clap, tom, perc
+    confidence: float  # 0-1
+    features: Optional[Dict[str, float]] = None
+
+
+class RhythmAnalysisResult(BaseModel):
+    """Complete rhythm analysis result"""
+    bpm: float
+    bpm_confidence: float
+    beats: List[float]
+    downbeats: List[Dict[str, Any]]
+    time_signature: int
+    hits: List[DrumHit]
+    swing: float  # 0-100, where 50 is straight
+    analysis_method: str  # 'madmom' or 'librosa'
+    duration: float
+    analysis_source: str = 'full_mix'  # 'drums_stem' or 'full_mix'
+    detected_genre: Optional[str] = None  # Detected genre from BPM/pattern
+    genre_confidence: float = 0.0  # Confidence of genre detection
+    # Pattern filter stats
+    pattern_filter_applied: bool = False
+    hits_before_filter: int = 0  # Count before filtering
+    hits_after_filter: int = 0  # Count after filtering
+
+
+class QuantizeRequest(BaseModel):
+    """Request to quantize hits to grid"""
+    hits: List[Dict[str, Any]]
+    bpm: float
+    downbeat_offset: float  # Time of first downbeat
+    swing: float  # 0-100
+    quantize_strength: float  # 0-1
+
+
+class QuantizeInstrumentRequest(BaseModel):
+    """Request to quantize a single instrument's hits"""
+    drum_type: str
+    hits: List[Dict[str, Any]]
+    bpm: float
+    downbeat_offset: float
+    swing: float  # 0-100
+    quantize_strength: float  # 0-1
+    subdivision: int = 4  # 4 = 16th notes per beat
+
+
+class QuantizeResult(BaseModel):
+    """Result of quantization"""
+    hits: List[DrumHit]
+    grid_positions: List[Dict[str, Any]]  # {bar, beat, subbeat}
+
+
+# =============================================================================
+# Audio Feature Extraction
+# =============================================================================
+
+def load_audio(file_path: str) -> Tuple[np.ndarray, int]:
+    """Load audio file and return mono waveform + sample rate"""
+    try:
+        y, sr = librosa.load(file_path, sr=44100, mono=True)
+        return y, sr
+    except Exception as e:
+        logger.error(f'Failed to load audio: {e}')
+        raise HTTPException(status_code=400, detail=f'Failed to load audio: {e}')
+
+
+def extract_hit_features(y: np.ndarray, sr: int, onset_time: float,
+                         window_ms: float = 80) -> Dict[str, float]:
+    """
+    Extract audio features around an onset for drum classification.
+
+    Frequency bands aligned with Knowledge Lab (signalChains.js FREQUENCY_ALLOCATION):
+    - sub_bass: 20-60Hz (kick sub, bass sub - MONO ONLY)
+    - bass: 60-200Hz (kick body, bass body)
+    - low_mids: 200-500Hz (MUD ZONE - should be minimal for clean drums)
+    - mids: 500-2kHz (snare body, vocal presence)
+    - high_mids: 2-6kHz (click/attack, brightness, presence)
+    - highs: 6-20kHz (cymbals, hi-hats, air)
+
+    Kick Processing from Knowledge Lab:
+    - HPF: 30Hz (remove subsonic)
+    - Sub thump: 50-60Hz
+    - Mud cut: ~300Hz
+    - Click/attack: 3-5kHz
+    """
+    # Window around onset - larger window for better low freq resolution
+    window_samples = int(window_ms * sr / 1000)
+    onset_sample = int(onset_time * sr)
+
+    start = max(0, onset_sample - window_samples // 4)  # Small pre-onset window
+    end = min(len(y), onset_sample + window_samples)
+
+    if end - start < 256:
+        return get_default_features()
+
+    segment = y[start:end]
+
+    # Compute spectrum with larger FFT for better low freq resolution
+    n_fft = min(4096, max(2048, len(segment)))
+    spectrum = np.abs(np.fft.rfft(segment * np.hanning(len(segment)), n=n_fft))
+    freqs = np.fft.rfftfreq(n_fft, 1/sr)
+
+    total_energy = np.sum(spectrum ** 2) + 1e-10
+
+    # Frequency band energies - ALIGNED WITH KNOWLEDGE LAB
+    # From signalChains.js FREQUENCY_ALLOCATION
+    sub_bass_mask = (freqs >= 20) & (freqs < 60)    # Kick sub (Knowledge Lab: 20-60Hz)
+    bass_mask = (freqs >= 60) & (freqs < 200)       # Kick body (Knowledge Lab: 60-200Hz)
+    low_mask = (freqs >= 20) & (freqs < 200)        # Combined sub+bass for kick detection
+    low_mid_mask = (freqs >= 200) & (freqs < 500)   # MUD ZONE (Knowledge Lab: 200-500Hz)
+    mid_mask = (freqs >= 500) & (freqs < 2000)      # Snare body (Knowledge Lab: 500-2kHz)
+    high_mid_mask = (freqs >= 2000) & (freqs < 6000) # Click/attack (Knowledge Lab: 2-6kHz)
+    high_mask = (freqs >= 6000) & (freqs < 20000)   # Cymbals/hihat (Knowledge Lab: 6-20kHz)
+    hihat_mask = (freqs >= 6000) & (freqs < 16000)  # Specific hi-hat range (tighter)
+
+    # Combined ranges for broader detection
+    all_high_mask = (freqs >= 2000) & (freqs < 20000)  # Everything above 2kHz
+
+    sub_bass_energy = np.sum(spectrum[sub_bass_mask] ** 2) / total_energy
+    bass_energy = np.sum(spectrum[bass_mask] ** 2) / total_energy
+    low_energy = np.sum(spectrum[low_mask] ** 2) / total_energy
+    low_mid_energy = np.sum(spectrum[low_mid_mask] ** 2) / total_energy
+    mid_energy = np.sum(spectrum[mid_mask] ** 2) / total_energy
+    high_mid_energy = np.sum(spectrum[high_mid_mask] ** 2) / total_energy
+    high_energy = np.sum(spectrum[high_mask] ** 2) / total_energy
+    hihat_energy = np.sum(spectrum[hihat_mask] ** 2) / total_energy
+    all_high_energy = np.sum(spectrum[all_high_mask] ** 2) / total_energy
+
+    # Spectral centroid (normalized to 0-1 range)
+    if np.sum(spectrum) > 0:
+        centroid = np.sum(freqs * spectrum) / np.sum(spectrum)
+        centroid_normalized = min(centroid / 10000, 1.0)
+    else:
+        centroid_normalized = 0.5
+
+    # Spectral flatness (geometric mean / arithmetic mean)
+    spectrum_positive = spectrum[spectrum > 0]
+    if len(spectrum_positive) > 0:
+        geometric_mean = np.exp(np.mean(np.log(spectrum_positive + 1e-10)))
+        arithmetic_mean = np.mean(spectrum_positive)
+        flatness = geometric_mean / (arithmetic_mean + 1e-10)
+    else:
+        flatness = 0.0
+
+    # Zero crossing rate
+    zcr = np.sum(np.abs(np.diff(np.signbit(segment)))) / len(segment)
+
+    # Transient characteristics
+    envelope = np.abs(segment)
+    peak_idx = np.argmax(envelope)
+    peak_val = envelope[peak_idx]
+
+    # Attack time (time from 10% to 90% of peak)
+    if peak_val > 0:
+        threshold_10 = 0.1 * peak_val
+        threshold_90 = 0.9 * peak_val
+
+        attack_start = 0
+        for i in range(peak_idx):
+            if envelope[i] >= threshold_10:
+                attack_start = i
+                break
+
+        attack_end = peak_idx
+        for i in range(attack_start, peak_idx):
+            if envelope[i] >= threshold_90:
+                attack_end = i
+                break
+
+        transient_width = (attack_end - attack_start) * 1000 / sr  # in ms
+    else:
+        transient_width = 5.0
+
+    # Decay time (time from peak to 10% of peak)
+    if peak_val > 0 and peak_idx < len(envelope) - 1:
+        decay_threshold = 0.1 * peak_val
+        decay_end = len(envelope) - 1
+        for i in range(peak_idx, len(envelope)):
+            if envelope[i] <= decay_threshold:
+                decay_end = i
+                break
+        decay_time = (decay_end - peak_idx) * 1000 / sr  # in ms
+    else:
+        decay_time = 30.0
+
+    return {
+        # Knowledge Lab frequency bands
+        'low_energy_ratio': float(low_energy),       # 20-200Hz (kick detection)
+        'sub_bass_ratio': float(sub_bass_energy),    # 20-60Hz (sub kick/808)
+        'bass_ratio': float(bass_energy),            # 60-200Hz (kick body)
+        'low_mid_ratio': float(low_mid_energy),      # 200-500Hz (mud zone)
+        'mid_energy_ratio': float(mid_energy),       # 500-2kHz (snare body)
+        'high_mid_ratio': float(high_mid_energy),    # 2-6kHz (click/attack)
+        'high_energy_ratio': float(high_energy),     # 6-20kHz (cymbals)
+        'hihat_band_ratio': float(hihat_energy),     # 6-16kHz (hi-hat specific)
+        'all_high_ratio': float(all_high_energy),    # 2-20kHz (all highs combined)
+        # Transient characteristics
+        'transient_width': float(transient_width),
+        'decay_time': float(decay_time),
+        # Spectral characteristics
+        'spectral_centroid': float(centroid_normalized),
+        'spectral_flatness': float(flatness),
+        'zero_crossing_rate': float(zcr)
+    }
+
+
+def get_default_features() -> Dict[str, float]:
+    """Return default features when extraction fails"""
+    return {
+        # Knowledge Lab frequency bands
+        'low_energy_ratio': 0.25,        # 20-200Hz
+        'sub_bass_ratio': 0.08,          # 20-60Hz
+        'bass_ratio': 0.17,              # 60-200Hz
+        'low_mid_ratio': 0.15,           # 200-500Hz (mud zone)
+        'mid_energy_ratio': 0.25,        # 500-2kHz
+        'high_mid_ratio': 0.15,          # 2-6kHz
+        'high_energy_ratio': 0.20,       # 6-20kHz
+        'hihat_band_ratio': 0.10,        # 6-16kHz
+        'all_high_ratio': 0.35,          # 2-20kHz
+        # Transient characteristics
+        'transient_width': 5.0,
+        'decay_time': 30.0,
+        # Spectral characteristics
+        'spectral_centroid': 0.5,
+        'spectral_flatness': 0.5,
+        'zero_crossing_rate': 0.1
+    }
+
+
+# =============================================================================
+# Beat and Downbeat Detection
+# =============================================================================
+
+def detect_beats_madmom(audio_path: str) -> BeatResult:
+    """Use madmom CNN for accurate beat/downbeat detection"""
+    if not MADMOM_AVAILABLE:
+        raise RuntimeError('madmom not available')
+
+    logger.info('Running madmom beat detection...')
+
+    # Beat tracking
+    beat_proc = RNNBeatProcessor()
+    beat_act = beat_proc(audio_path)
+    beat_tracker = DBNBeatTrackingProcessor(fps=100, min_bpm=50, max_bpm=220)
+    beats = beat_tracker(beat_act)
+
+    if len(beats) < 2:
+        raise ValueError('Not enough beats detected')
+
+    # Calculate BPM from beat intervals
+    beat_intervals = np.diff(beats)
+    median_interval = np.median(beat_intervals)
+    bpm = 60.0 / median_interval
+
+    # BPM confidence from interval consistency
+    interval_std = np.std(beat_intervals)
+    bpm_confidence = max(0, 1 - (interval_std / median_interval))
+
+    # Downbeat tracking
+    try:
+        downbeat_proc = RNNDownBeatProcessor()
+        downbeat_act = downbeat_proc(audio_path)
+        downbeat_tracker = DBNDownBeatTrackingProcessor(
+            beats_per_bar=[4, 3],
+            fps=100
+        )
+        downbeat_results = downbeat_tracker(downbeat_act)
+
+        # downbeat_results is array of (time, beat_position)
+        downbeats = [
+            {'time': float(row[0]), 'beat_position': int(row[1])}
+            for row in downbeat_results
+        ]
+
+        # Determine time signature from beat positions
+        beat_positions = [d['beat_position'] for d in downbeats]
+        max_beat = max(beat_positions) if beat_positions else 4
+        time_signature = max_beat
+
+    except Exception as e:
+        logger.warning(f'Downbeat detection failed: {e}, using beat-based estimation')
+        # Fall back to assuming 4/4
+        downbeats = [
+            {'time': float(beats[i]), 'beat_position': (i % 4) + 1}
+            for i in range(len(beats))
+        ]
+        time_signature = 4
+
+    return BeatResult(
+        bpm=float(bpm),
+        bpm_confidence=float(bpm_confidence),
+        beats=[float(b) for b in beats],
+        downbeats=downbeats,
+        time_signature=time_signature
+    )
+
+
+def detect_beats_librosa(y: np.ndarray, sr: int) -> BeatResult:
+    """Fallback beat detection using librosa"""
+    logger.info('Running librosa beat detection (fallback)...')
+
+    # Get tempo and beat frames
+    tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+    beats = librosa.frames_to_time(beat_frames, sr=sr)
+
+    # Handle tempo as array or scalar
+    if isinstance(tempo, np.ndarray):
+        bpm = float(tempo[0]) if len(tempo) > 0 else 120.0
+    else:
+        bpm = float(tempo)
+
+    if len(beats) < 2:
+        # Generate synthetic beats if detection fails
+        duration = len(y) / sr
+        beat_interval = 60.0 / bpm
+        beats = np.arange(0, duration, beat_interval)
+
+    # Estimate confidence from onset strength consistency
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+    beat_strengths = onset_env[beat_frames] if len(beat_frames) > 0 else np.array([1.0])
+    bpm_confidence = float(np.mean(beat_strengths) / (np.max(onset_env) + 1e-10))
+
+    # Assume 4/4 for librosa fallback
+    downbeats = [
+        {'time': float(beats[i]), 'beat_position': (i % 4) + 1}
+        for i in range(len(beats))
+    ]
+
+    return BeatResult(
+        bpm=bpm,
+        bpm_confidence=min(bpm_confidence, 1.0),
+        beats=[float(b) for b in beats],
+        downbeats=downbeats,
+        time_signature=4
+    )
+
+
+def detect_beats(audio_path: str, y: np.ndarray, sr: int) -> Tuple[BeatResult, str]:
+    """Detect beats using best available method"""
+    method = 'librosa'
+
+    if MADMOM_AVAILABLE:
+        try:
+            result = detect_beats_madmom(audio_path)
+            method = 'madmom'
+            return result, method
+        except Exception as e:
+            logger.warning(f'madmom beat detection failed: {e}, falling back to librosa')
+
+    result = detect_beats_librosa(y, sr)
+    return result, method
+
+
+# =============================================================================
+# Onset Detection
+# =============================================================================
+
+def detect_onsets_madmom(audio_path: str) -> np.ndarray:
+    """Use madmom RNN for onset detection"""
+    if not MADMOM_AVAILABLE:
+        raise RuntimeError('madmom not available')
+
+    logger.info('Running madmom onset detection...')
+
+    onset_proc = RNNOnsetProcessor()
+    onset_act = onset_proc(audio_path)
+
+    # Peak picking on activation function
+    from madmom.features.onsets import peak_picking
+    onsets = peak_picking(onset_act, threshold=0.3, fps=100)
+
+    # Convert frame indices to time
+    onset_times = onsets / 100.0  # fps=100
+
+    return onset_times
+
+
+def detect_onsets_librosa(y: np.ndarray, sr: int) -> np.ndarray:
+    """Fallback onset detection using librosa with gentle filtering"""
+    logger.info('Running librosa onset detection (fallback)...')
+
+    # Get onset strength envelope
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+
+    # Detect onsets with lower threshold for better sensitivity
+    onset_frames = librosa.onset.onset_detect(
+        y=y, sr=sr,
+        onset_envelope=onset_env,
+        backtrack=True,
+        units='frames',
+        delta=0.05,  # Lower delta for more sensitivity
+        wait=2       # Minimum frames between onsets (about 46ms at 22050 sr)
+    )
+
+    # Very gentle filtering - only remove the weakest 10%
+    if len(onset_frames) > 10:
+        onset_strengths = onset_env[onset_frames]
+        # Keep onsets above 10% of max strength (very permissive)
+        threshold = 0.1 * np.max(onset_strengths)
+        strong_mask = onset_strengths >= threshold
+        onset_frames = onset_frames[strong_mask]
+
+    onset_times = librosa.frames_to_time(onset_frames, sr=sr)
+
+    logger.info(f'Detected {len(onset_times)} onsets (from {len(y)/sr:.1f}s audio)')
+    return onset_times
+
+
+def detect_drums_beat_aligned(y: np.ndarray, sr: int, beats: np.ndarray, time_signature: int = 4) -> Dict[str, List[float]]:
+    """
+    Beat-aligned drum detection - checks for drum energy AT beat positions.
+
+    This is more reliable than free transcription because:
+    1. We know WHERE to look (on the beat grid)
+    2. We just check IF there's appropriate energy there
+
+    Approach:
+    - Kick: Check for low frequency energy on beats 1 & 3 (or all beats for EDM)
+    - Snare: Check for mid+high frequency energy on beats 2 & 4
+    - Hi-hat: Check for high frequency energy on all 8th notes
+    """
+    logger.info('Running beat-aligned drum detection...')
+
+    from scipy.signal import butter, sosfilt
+
+    def bandpass_filter(data, lowcut, highcut, fs, order=4):
+        nyq = 0.5 * fs
+        low = max(lowcut / nyq, 0.01)
+        high = min(highcut / nyq, 0.99)
+        if low >= high:
+            return data
+        try:
+            sos = butter(order, [low, high], btype='band', output='sos')
+            return sosfilt(sos, data)
+        except:
+            return data
+
+    def get_energy_at_time(audio, sample_rate, time_sec, window_ms=30):
+        """Get RMS energy in a window around the given time"""
+        center = int(time_sec * sample_rate)
+        half_window = int(window_ms * sample_rate / 1000 / 2)
+        start = max(0, center - half_window)
+        end = min(len(audio), center + half_window)
+        if end <= start:
+            return 0.0
+        segment = audio[start:end]
+        return float(np.sqrt(np.mean(segment ** 2)))
+
+    # Pre-filter audio for each frequency band
+    y_low = bandpass_filter(y, 30, 150, sr)      # Kick band
+    y_mid = bandpass_filter(y, 150, 2000, sr)    # Snare body
+    y_high = bandpass_filter(y, 5000, min(16000, sr/2-100), sr)  # Hi-hat/cymbal
+
+    # Calculate energy thresholds from the full track
+    # Use median as baseline, detect hits above threshold
+    low_energies = [get_energy_at_time(y_low, sr, t) for t in beats]
+    mid_energies = [get_energy_at_time(y_mid, sr, t) for t in beats]
+    high_energies = [get_energy_at_time(y_high, sr, t) for t in beats]
+
+    # Lower thresholds to catch more elements (was 1.5, 1.5, 1.2)
+    low_threshold = np.median(low_energies) * 1.0 if low_energies else 0.01
+    mid_threshold = np.median(mid_energies) * 1.0 if mid_energies else 0.01
+    high_threshold = np.median(high_energies) * 0.8 if high_energies else 0.01
+
+    logger.info(f'Energy thresholds - low: {low_threshold:.4f}, mid: {mid_threshold:.4f}, high: {high_threshold:.4f}')
+
+    results = {'kick': [], 'snare': [], 'hihat': [], 'clap': [], 'tom': [], 'perc': []}
+
+    # Calculate 8th note positions (between beats)
+    eighth_notes = []
+    for i in range(len(beats) - 1):
+        eighth_notes.append(beats[i])
+        eighth_notes.append((beats[i] + beats[i+1]) / 2)  # Halfway between beats
+    if len(beats) > 0:
+        eighth_notes.append(beats[-1])
+
+    # Process each beat
+    for i, beat_time in enumerate(beats):
+        beat_in_bar = i % time_signature  # 0, 1, 2, 3 for 4/4
+
+        low_energy = get_energy_at_time(y_low, sr, beat_time)
+        mid_energy = get_energy_at_time(y_mid, sr, beat_time)
+        high_energy = get_energy_at_time(y_high, sr, beat_time)
+
+        # KICK: Low energy on beats 1 and 3 (most common), or any beat with strong low
+        # Use lower threshold (0.5x) for expected kick positions (beats 1 & 3)
+        if beat_in_bar in [0, 2]:  # Beats 1 and 3 (0-indexed)
+            if low_energy > low_threshold * 0.5:
+                results['kick'].append(beat_time)
+        else:
+            # Higher threshold for unexpected positions (beats 2 & 4)
+            if low_energy > low_threshold * 1.2:
+                results['kick'].append(beat_time)
+
+        # SNARE: Must have mid energy AND mid must dominate over low (not just kick harmonics)
+        # Only on beats 2 and 4
+        if beat_in_bar in [1, 3]:
+            # Snare needs mid energy to be significant AND higher than low (kick)
+            if mid_energy > mid_threshold * 1.5 and mid_energy > low_energy * 0.8:
+                results['snare'].append(beat_time)
+
+        # CLAP: Needs both mid and high, and must be stronger than surrounding
+        if beat_in_bar in [1, 3]:
+            if mid_energy > mid_threshold * 1.8 and high_energy > high_threshold * 1.5:
+                results['clap'].append(beat_time)
+
+    # HI-HAT: Check all 8th note positions
+    # Must have high frequency energy that dominates (not just kick/snare harmonics)
+    for eighth_time in eighth_notes:
+        high_energy = get_energy_at_time(y_high, sr, eighth_time)
+        low_energy = get_energy_at_time(y_low, sr, eighth_time)
+        # Hihat needs high energy to be significant AND higher than low energy
+        if high_energy > high_threshold * 1.2 and high_energy > low_energy * 0.5:
+            results['hihat'].append(eighth_time)
+
+    # Remove duplicates and sort
+    for drum_type in results:
+        results[drum_type] = sorted(set(results[drum_type]))
+
+    logger.info(f'Beat-aligned detection: kick={len(results["kick"])}, snare={len(results["snare"])}, '
+                f'hihat={len(results["hihat"])}, clap={len(results["clap"])}')
+
+    return results
+
+
+def detect_onsets_per_drum(y: np.ndarray, sr: int) -> Dict[str, np.ndarray]:
+    """
+    Detect onsets SEPARATELY for each drum type in its frequency band.
+    Returns dict of {drum_type: onset_times}.
+
+    This is more accurate than detecting all onsets then classifying,
+    because each drum's onsets are found in isolation.
+    """
+    logger.info('Running per-drum onset detection...')
+
+    from scipy.signal import butter, sosfilt
+
+    def bandpass_filter(data, lowcut, highcut, fs, order=4):
+        """Safe bandpass filter"""
+        nyq = 0.5 * fs
+        low = max(lowcut / nyq, 0.01)
+        high = min(highcut / nyq, 0.99)
+        if low >= high:
+            return data
+        try:
+            sos = butter(order, [low, high], btype='band', output='sos')
+            filtered = sosfilt(sos, data)
+            if not np.isfinite(filtered).all():
+                return data
+            return filtered
+        except:
+            return data
+
+    results = {}
+
+    # === KICK: 30-150Hz (tight range for kick body) ===
+    y_kick = bandpass_filter(y, 30, 150, sr)
+    kick_env = librosa.onset.onset_strength(y=y_kick, sr=sr, aggregate=np.median)
+    kick_frames = librosa.onset.onset_detect(
+        onset_envelope=kick_env, sr=sr,
+        backtrack=False, units='frames',
+        delta=0.15,  # Higher threshold = fewer, stronger hits
+        wait=8       # Min ~180ms between kicks
+    )
+    results['kick'] = librosa.frames_to_time(kick_frames, sr=sr)
+    logger.info(f'  Kick: {len(results["kick"])} hits')
+
+    # === SNARE: 150-1200Hz (snare body, tighter range) ===
+    y_snare = bandpass_filter(y, 150, 1200, sr)
+    snare_env = librosa.onset.onset_strength(y=y_snare, sr=sr, aggregate=np.median)
+    snare_frames = librosa.onset.onset_detect(
+        onset_envelope=snare_env, sr=sr,
+        backtrack=False, units='frames',
+        delta=0.12,
+        wait=6       # Min ~135ms between snares
+    )
+    results['snare'] = librosa.frames_to_time(snare_frames, sr=sr)
+    logger.info(f'  Snare: {len(results["snare"])} hits')
+
+    # === CLAP: 1200-4000Hz (clap body, noisy mid-highs) ===
+    # Claps have energy in upper-mids, are very noisy/diffuse
+    y_clap = bandpass_filter(y, 1200, 4000, sr)
+    clap_env = librosa.onset.onset_strength(y=y_clap, sr=sr)
+    clap_frames = librosa.onset.onset_detect(
+        onset_envelope=clap_env, sr=sr,
+        backtrack=False, units='frames',
+        delta=0.10,   # Sensitive - claps can be subtle in background
+        wait=4        # Min ~90ms between claps
+    )
+    results['clap'] = librosa.frames_to_time(clap_frames, sr=sr)
+    logger.info(f'  Clap: {len(results["clap"])} hits')
+
+    # === HI-HAT: 6000-16000Hz (cymbals only) ===
+    y_hihat = bandpass_filter(y, 6000, min(16000, sr/2 - 100), sr)
+    hihat_env = librosa.onset.onset_strength(y=y_hihat, sr=sr)
+    hihat_frames = librosa.onset.onset_detect(
+        onset_envelope=hihat_env, sr=sr,
+        backtrack=False, units='frames',
+        delta=0.08,
+        wait=2       # Hi-hats can be fast
+    )
+    results['hihat'] = librosa.frames_to_time(hihat_frames, sr=sr)
+    logger.info(f'  Hi-hat: {len(results["hihat"])} hits')
+
+    # === TOM: 80-400Hz (tom body, lower than snare) ===
+    # Toms have low-mid frequency content, between kick and snare
+    y_tom = bandpass_filter(y, 80, 400, sr)
+    tom_env = librosa.onset.onset_strength(y=y_tom, sr=sr, aggregate=np.median)
+    tom_frames = librosa.onset.onset_detect(
+        onset_envelope=tom_env, sr=sr,
+        backtrack=False, units='frames',
+        delta=0.18,  # Higher threshold - toms are less common
+        wait=6
+    )
+    # Remove tom hits that overlap with kick (within 50ms)
+    tom_times = librosa.frames_to_time(tom_frames, sr=sr)
+    kick_times = results.get('kick', np.array([]))
+    if len(kick_times) > 0 and len(tom_times) > 0:
+        filtered_toms = []
+        for t in tom_times:
+            if not np.any(np.abs(kick_times - t) < 0.05):
+                filtered_toms.append(t)
+        results['tom'] = np.array(filtered_toms)
+    else:
+        results['tom'] = tom_times
+    logger.info(f'  Tom: {len(results["tom"])} hits')
+
+    # === PERC: 4000-8000Hz (shakers, percussion) ===
+    # Percussion instruments in upper-mid frequencies
+    y_perc = bandpass_filter(y, 4000, 8000, sr)
+    perc_env = librosa.onset.onset_strength(y=y_perc, sr=sr)
+    perc_frames = librosa.onset.onset_detect(
+        onset_envelope=perc_env, sr=sr,
+        backtrack=False, units='frames',
+        delta=0.12,
+        wait=3
+    )
+    # Remove perc hits that overlap with hihat or clap (within 30ms)
+    perc_times = librosa.frames_to_time(perc_frames, sr=sr)
+    hihat_times = results.get('hihat', np.array([]))
+    clap_times = results.get('clap', np.array([]))
+    if len(perc_times) > 0:
+        filtered_percs = []
+        for t in perc_times:
+            overlaps_hihat = len(hihat_times) > 0 and np.any(np.abs(hihat_times - t) < 0.03)
+            overlaps_clap = len(clap_times) > 0 and np.any(np.abs(clap_times - t) < 0.03)
+            if not overlaps_hihat and not overlaps_clap:
+                filtered_percs.append(t)
+        results['perc'] = np.array(filtered_percs)
+    else:
+        results['perc'] = perc_times
+    logger.info(f'  Perc: {len(results["perc"])} hits')
+
+    return results
+
+
+def detect_onsets_drums(y: np.ndarray, sr: int) -> np.ndarray:
+    """Legacy function - returns combined onsets"""
+    per_drum = detect_onsets_per_drum(y, sr)
+    all_onsets = np.concatenate([per_drum.get('kick', []),
+                                  per_drum.get('snare', []),
+                                  per_drum.get('clap', []),
+                                  per_drum.get('hihat', [])])
+    return np.unique(np.sort(all_onsets))
+
+
+def detect_onsets(audio_path: str, y: np.ndarray, sr: int) -> np.ndarray:
+    """Detect onsets using best available method"""
+    if MADMOM_AVAILABLE:
+        try:
+            return detect_onsets_madmom(audio_path)
+        except Exception as e:
+            logger.warning(f'madmom onset detection failed: {e}, falling back to librosa')
+
+    # Try drum-focused detection first, then standard librosa
+    drum_onsets = detect_onsets_drums(y, sr)
+    standard_onsets = detect_onsets_librosa(y, sr)
+
+    # Merge and deduplicate (prefer drum-focused)
+    all_onsets = np.concatenate([drum_onsets, standard_onsets])
+    all_onsets = np.sort(all_onsets)
+
+    # Remove duplicates within 30ms
+    if len(all_onsets) > 1:
+        diffs = np.diff(all_onsets)
+        keep_mask = np.concatenate([[True], diffs > 0.03])
+        all_onsets = all_onsets[keep_mask]
+
+    logger.info(f'Combined onset detection: {len(all_onsets)} unique onsets')
+    return all_onsets
+
+
+# =============================================================================
+# Drum Classification
+# =============================================================================
+
+def classify_hit_rules_drums_stem(features: Dict[str, float], beat_position: Optional[float] = None) -> Tuple[str, float]:
+    """
+    Rule-based drum classification OPTIMIZED FOR ISOLATED DRUMS STEMS.
+
+    When analyzing a separated drums stem, there's no bass guitar/synths/vocals,
+    so we can use more direct spectral analysis:
+    - Low frequencies = KICK (it's the only thing down there)
+    - Mid frequencies + noise = SNARE
+    - High frequencies = HI-HAT
+    """
+    low = features['low_energy_ratio']           # 20-200Hz
+    sub_bass = features.get('sub_bass_ratio', low * 0.3)   # 20-60Hz
+    mid = features['mid_energy_ratio']           # 500-2kHz
+    high = features['high_energy_ratio']         # 6-20kHz
+    high_mid = features.get('high_mid_ratio', 0.15)        # 2-6kHz
+
+    transient = features['transient_width']
+    decay = features['decay_time']
+    flatness = features['spectral_flatness']
+    zcr = features['zero_crossing_rate']
+    centroid = features.get('spectral_centroid', 0.5)
+
+    scores = {
+        'kick': 0.0,
+        'snare': 0.0,
+        'hihat': 0.0,
+        'clap': 0.0,
+        'tom': 0.0,
+        'perc': 0.0
+    }
+
+    # For isolated drums: direct frequency mapping
+    total = low + mid + high + 0.001
+
+    # === KICK: Low frequency dominant ===
+    # In drums stem, kick is the ONLY thing with significant low end
+    if low > 0.35:  # Strong low content
+        scores['kick'] += 0.7
+    elif low > 0.25:
+        scores['kick'] += 0.5
+    elif low > 0.15:
+        scores['kick'] += 0.25
+
+    # Kick has low centroid
+    if centroid < 0.20:
+        scores['kick'] += 0.3
+    elif centroid < 0.30:
+        scores['kick'] += 0.15
+
+    # Kick penalty if too bright
+    if centroid > 0.40:
+        scores['kick'] -= 0.4
+    if high > low:
+        scores['kick'] -= 0.3
+
+    # === HI-HAT: High frequency dominant ===
+    # In drums stem, hi-hat is clearly the brightest element
+    if high > 0.25:
+        scores['hihat'] += 0.6
+    elif high > 0.15:
+        scores['hihat'] += 0.4
+    elif high > 0.10:
+        scores['hihat'] += 0.2
+
+    # Hi-hat has high centroid
+    if centroid > 0.50:
+        scores['hihat'] += 0.4
+    elif centroid > 0.40:
+        scores['hihat'] += 0.25
+    elif centroid > 0.35:
+        scores['hihat'] += 0.1
+
+    # Short decay for closed hi-hat
+    if decay < 15:
+        scores['hihat'] += 0.2
+
+    # Hi-hat penalty if too much low
+    if low > 0.25:
+        scores['hihat'] -= 0.4
+
+    # === SNARE: Mid frequencies + noise ===
+    # Snare has characteristic noise (high flatness, ZCR)
+    if flatness > 0.30:
+        scores['snare'] += 0.4
+    elif flatness > 0.22:
+        scores['snare'] += 0.25
+
+    if zcr > 0.08:
+        scores['snare'] += 0.25
+    elif zcr > 0.05:
+        scores['snare'] += 0.15
+
+    # Mid-range centroid
+    if 0.25 < centroid < 0.50:
+        scores['snare'] += 0.25
+
+    # Mid frequency content
+    if mid > 0.20:
+        scores['snare'] += 0.2
+
+    # High-mid presence (snare snap)
+    if high_mid > 0.12:
+        scores['snare'] += 0.15
+
+    # === CLAP: Very noisy, similar to snare but noisier ===
+    if flatness > 0.45:
+        scores['clap'] += 0.5
+    if zcr > 0.12:
+        scores['clap'] += 0.3
+    if 0.30 < centroid < 0.50:
+        scores['clap'] += 0.15
+
+    # === TOM: Tonal, low-mid, longer decay ===
+    if flatness < 0.20 and decay > 35:
+        scores['tom'] += 0.4
+    if 0.18 < centroid < 0.35:
+        scores['tom'] += 0.2
+    if 0.10 < low < 0.30 and mid > 0.15:
+        scores['tom'] += 0.2
+
+    # === PERC: catch-all ===
+    scores['perc'] += 0.05
+
+    # Beat position boost
+    if beat_position is not None:
+        on_beat = beat_position < 0.12 or beat_position > 0.88
+        if on_beat:
+            scores['kick'] *= 1.2
+
+    # Find best match
+    best_type = max(scores, key=scores.get)
+    best_score = scores[best_type]
+
+    total_score = sum(scores.values())
+    confidence = best_score / total_score if total_score > 0 else 0.5
+
+    # Boost confidence if clearly dominant
+    sorted_scores = sorted(scores.values(), reverse=True)
+    if len(sorted_scores) > 1 and sorted_scores[0] > sorted_scores[1] * 1.8:
+        confidence = min(confidence * 1.3, 0.95)
+
+    return best_type, confidence
+
+
+def classify_hit_rules(features: Dict[str, float], beat_position: Optional[float] = None) -> Tuple[str, float]:
+    """
+    Rule-based drum classification using Knowledge Lab frequency bands.
+    OPTIMIZED FOR FULL MIXES where bass adds low-end to everything.
+
+    Key insight: In full mixes, we must use RELATIVE comparisons, not absolute thresholds.
+    A kick is when low >> high. A hi-hat is when high >> low.
+    """
+    # Knowledge Lab frequency bands
+    low = features['low_energy_ratio']           # 20-200Hz combined
+    sub_bass = features.get('sub_bass_ratio', low * 0.3)   # 20-60Hz (kick sub)
+    bass = features.get('bass_ratio', low * 0.7)           # 60-200Hz (kick body)
+    low_mid = features.get('low_mid_ratio', 0.15)          # 200-500Hz (mud zone)
+    mid = features['mid_energy_ratio']           # 500-2kHz (snare body)
+    high_mid = features.get('high_mid_ratio', 0.15)        # 2-6kHz (click/attack)
+    high = features['high_energy_ratio']         # 6-20kHz (cymbals)
+    hihat_band = features.get('hihat_band_ratio', high * 0.8)  # 6-16kHz
+    all_high = features.get('all_high_ratio', high + high_mid)  # 2-20kHz
+
+    # Transient/spectral features
+    transient = features['transient_width']
+    decay = features['decay_time']
+    flatness = features['spectral_flatness']
+    zcr = features['zero_crossing_rate']
+    centroid = features.get('spectral_centroid', 0.5)
+
+    scores = {
+        'kick': 0.0,
+        'snare': 0.0,
+        'hihat': 0.0,
+        'clap': 0.0,
+        'tom': 0.0,
+        'perc': 0.0
+    }
+
+    # Calculate key ratios for full-mix classification
+    total_energy = low + mid + all_high + 0.001
+    low_dominance = low / total_energy          # How much of total is low?
+    mid_dominance = mid / total_energy          # How much of total is mid?
+    high_dominance = all_high / total_energy    # How much of total is high?
+
+    # === PRIMARY CLASSIFICATION BY SPECTRAL CENTROID ===
+    # Centroid is the most reliable indicator in full mixes:
+    # - Kick: centroid < 0.20 (very low)
+    # - Snare: 0.20 < centroid < 0.45 (mid-range)
+    # - Hi-hat: centroid > 0.45 (bright)
+
+    # === KICK DETECTION (STRICT) ===
+    # Only kick if VERY low centroid AND low-dominant
+    if centroid < 0.15:
+        scores['kick'] += 0.6
+    elif centroid < 0.22:
+        scores['kick'] += 0.3
+    # Must have significant low dominance
+    if low_dominance > 0.50:
+        scores['kick'] += 0.3
+    elif low_dominance > 0.42:
+        scores['kick'] += 0.15
+    # Low >> high is key
+    if low > all_high * 2.5:
+        scores['kick'] += 0.2
+    # PENALTY: if centroid is not low, less likely kick
+    if centroid > 0.30:
+        scores['kick'] -= 0.3
+    if centroid > 0.40:
+        scores['kick'] -= 0.3
+
+    # === HI-HAT DETECTION (AGGRESSIVE) ===
+    # Hi-hat = bright (high centroid) + short decay
+    if centroid > 0.50:
+        scores['hihat'] += 0.5
+    elif centroid > 0.40:
+        scores['hihat'] += 0.35
+    elif centroid > 0.32:
+        scores['hihat'] += 0.15
+    # Short decay is key for closed hi-hat
+    if decay < 12:
+        scores['hihat'] += 0.25
+    elif decay < 20:
+        scores['hihat'] += 0.15
+    # High frequency content
+    if high_dominance > 0.35:
+        scores['hihat'] += 0.2
+    elif high_dominance > 0.25:
+        scores['hihat'] += 0.1
+    # Hi-hat band presence
+    if hihat_band > 0.10:
+        scores['hihat'] += 0.15
+    # PENALTY: if lots of low, not hi-hat
+    if low_dominance > 0.40:
+        scores['hihat'] -= 0.3
+
+    # === SNARE DETECTION ===
+    # Snare = mid centroid + NOISY (high flatness + zcr)
+    if 0.22 < centroid < 0.48:
+        scores['snare'] += 0.3
+    # NOISE is the key differentiator for snare
+    if flatness > 0.28:
+        scores['snare'] += 0.35
+    elif flatness > 0.20:
+        scores['snare'] += 0.2
+    # Zero crossing (noise)
+    if zcr > 0.07:
+        scores['snare'] += 0.2
+    elif zcr > 0.05:
+        scores['snare'] += 0.1
+    # Mid-range frequencies
+    if mid_dominance > 0.22:
+        scores['snare'] += 0.15
+    # High-mid snap (2-6kHz)
+    if high_mid > 0.10:
+        scores['snare'] += 0.1
+    # Medium decay
+    if 10 < decay < 50:
+        scores['snare'] += 0.1
+
+    # === CLAP DETECTION ===
+    # Clap = VERY noisy (highest flatness)
+    if flatness > 0.42:
+        scores['clap'] += 0.4
+    if flatness > 0.50:
+        scores['clap'] += 0.2
+    if zcr > 0.10:
+        scores['clap'] += 0.2
+    if 0.25 < centroid < 0.45:
+        scores['clap'] += 0.1
+
+    # === TOM DETECTION ===
+    # Tom = tonal (low flatness), longer decay, low-mid
+    if flatness < 0.22 and decay > 30:
+        scores['tom'] += 0.35
+    if low_mid > 0.12:
+        scores['tom'] += 0.15
+    if 0.15 < centroid < 0.35:
+        scores['tom'] += 0.15
+
+    # === PERC (catch-all) ===
+    scores['perc'] += 0.08
+
+    # === PATTERN-AWARE BOOSTING ===
+    # If we know the beat position, boost confidence for expected placements
+    if beat_position is not None:
+        # beat_position is 0-1 within a beat (0=downbeat, 0.5=off-beat)
+        on_beat = beat_position < 0.1 or beat_position > 0.9  # Near beat
+        on_offbeat = 0.4 < beat_position < 0.6  # Between beats
+
+        # Kicks typically on downbeats
+        if on_beat:
+            scores['kick'] *= 1.3
+
+        # Hi-hats common on off-beats
+        if on_offbeat:
+            scores['hihat'] *= 1.2
+
+        # Snares/claps on backbeats (beats 2, 4) would be at position 0 within those beats
+        # This is handled at a higher level with beat number
+
+    # Find best match
+    best_type = max(scores, key=scores.get)
+    best_score = scores[best_type]
+
+    # Normalize confidence
+    total_score = sum(scores.values())
+    confidence = best_score / total_score if total_score > 0 else 0.5
+
+    # Boost confidence if score is significantly higher than others
+    sorted_scores = sorted(scores.values(), reverse=True)
+    if len(sorted_scores) > 1 and sorted_scores[0] > sorted_scores[1] * 1.5:
+        confidence = min(confidence * 1.2, 0.95)
+
+    return best_type, confidence
+
+
+def classify_hit_ml(features: Dict[str, float]) -> Tuple[str, float]:
+    """ML-based drum classification"""
+    if classifier is None:
+        return classify_hit_rules(features)
+
+    feature_vector = [
+        features['low_energy_ratio'],
+        features['mid_energy_ratio'],
+        features['high_energy_ratio'],
+        features['transient_width'],
+        features['decay_time'],
+        features['spectral_centroid'],
+        features['spectral_flatness'],
+        features['zero_crossing_rate']
+    ]
+
+    drum_type = classifier.predict([feature_vector])[0]
+    confidence = max(classifier.predict_proba([feature_vector])[0])
+
+    return drum_type, confidence
+
+
+def classify_hits(y: np.ndarray, sr: int, onset_times: np.ndarray,
+                  beats: Optional[np.ndarray] = None,
+                  time_signature: int = 4,
+                  is_drums_stem: bool = False) -> List[DrumHit]:
+    """
+    Classify each detected onset as a drum type with beat-aware boosting.
+
+    Args:
+        y: Audio waveform
+        sr: Sample rate
+        onset_times: Array of onset times in seconds
+        beats: Array of beat times for pattern-aware classification
+        time_signature: Beats per bar (3 or 4)
+        is_drums_stem: If True, use classifier optimized for isolated drums
+    """
+    classifier_name = 'drums_stem' if is_drums_stem else 'full_mix'
+    logger.info(f'Classifying {len(onset_times)} hits using {classifier_name} classifier...')
+
+    # Pre-compute beat positions if beats are provided
+    beat_positions = None
+    beat_numbers = None
+    if beats is not None and len(beats) > 1:
+        beat_duration = np.median(np.diff(beats))
+        beat_positions = {}
+        beat_numbers = {}
+        for onset_time in onset_times:
+            # Find nearest beat
+            beat_idx = np.argmin(np.abs(beats - onset_time))
+            beat_time = beats[beat_idx]
+
+            # Position within beat (0.0 = on beat, 0.5 = half way to next beat)
+            if onset_time >= beat_time:
+                if beat_idx < len(beats) - 1:
+                    next_beat = beats[beat_idx + 1]
+                    pos = (onset_time - beat_time) / (next_beat - beat_time)
+                else:
+                    pos = (onset_time - beat_time) / beat_duration
+            else:
+                if beat_idx > 0:
+                    prev_beat = beats[beat_idx - 1]
+                    pos = 1.0 - (beat_time - onset_time) / (beat_time - prev_beat)
+                else:
+                    pos = 0.0
+
+            beat_positions[onset_time] = min(max(pos, 0.0), 1.0)
+            # Which beat in the bar (1, 2, 3, 4)
+            beat_numbers[onset_time] = (beat_idx % time_signature) + 1
+
+    hits = []
+    for onset_time in onset_times:
+        features = extract_hit_features(y, sr, onset_time)
+
+        # Get beat position for pattern-aware classification
+        beat_pos = beat_positions.get(onset_time) if beat_positions else None
+        beat_num = beat_numbers.get(onset_time) if beat_numbers else None
+
+        if SKLEARN_AVAILABLE and classifier is not None:
+            drum_type, confidence = classify_hit_ml(features)
+        elif is_drums_stem:
+            # Use classifier optimized for isolated drums (cleaner signal)
+            drum_type, confidence = classify_hit_rules_drums_stem(features, beat_pos)
+        else:
+            # Use classifier optimized for full mixes (accounts for bass/synth bleed)
+            drum_type, confidence = classify_hit_rules(features, beat_pos)
+
+        # Additional pattern-based boosting for snare/clap on beats 2 and 4
+        if beat_num in [2, 4] and beat_pos is not None and beat_pos < 0.15:
+            if drum_type in ['snare', 'clap']:
+                confidence = min(confidence * 1.2, 0.95)
+            elif features['mid_energy_ratio'] > 0.12:
+                # If something is on 2 or 4 with mid frequencies, might be snare
+                # Re-evaluate with snare bias
+                features_copy = features.copy()
+                scores_snare = 0.3  # Base boost for being on backbeat
+                if features_copy['mid_energy_ratio'] > 0.15:
+                    scores_snare += 0.2
+                if features_copy['spectral_flatness'] > 0.2:
+                    scores_snare += 0.15
+                if scores_snare > 0.5:
+                    drum_type = 'snare'
+                    confidence = min(0.6, confidence)
+
+        # Boost kick confidence on beats 1 and 3
+        if beat_num in [1, 3] and beat_pos is not None and beat_pos < 0.15:
+            if drum_type == 'kick':
+                confidence = min(confidence * 1.2, 0.95)
+            elif features['low_energy_ratio'] > 0.15:
+                # Something with low end on beat 1 or 3 might be kick
+                if features['low_energy_ratio'] > features['high_energy_ratio']:
+                    drum_type = 'kick'
+                    confidence = min(0.6, confidence)
+
+        hits.append(DrumHit(
+            time=float(onset_time),
+            type=drum_type,
+            confidence=float(confidence),
+            features=features
+        ))
+
+    return hits
+
+
+# =============================================================================
+# Swing Detection and Quantization
+# =============================================================================
+
+def detect_swing(hits: List[DrumHit], beats: List[float],
+                 time_signature: int = 4) -> float:
+    """
+    Detect swing amount from hit timing.
+
+    Swing is measured as the ratio of the first half of each beat to the second.
+    - 50% = straight (equal 8th notes)
+    - 67% = triplet swing
+    - Higher values = more swing
+
+    Returns swing as percentage (0-100).
+    """
+    if len(hits) < 4 or len(beats) < 2:
+        return 50.0  # Default to straight
+
+    hit_times = np.array([h.time for h in hits])
+    beats = np.array(beats)
+
+    # Calculate beat duration
+    beat_duration = np.median(np.diff(beats))
+    eighth_duration = beat_duration / 2
+
+    # Find hits that fall on offbeats (between beats)
+    offbeat_ratios = []
+
+    for i in range(len(beats) - 1):
+        beat_start = beats[i]
+        beat_end = beats[i + 1]
+        beat_mid = beat_start + beat_duration / 2
+
+        # Find hits in this beat
+        beat_hits = hit_times[(hit_times >= beat_start) & (hit_times < beat_end)]
+
+        # Find hits near the offbeat position
+        for hit_time in beat_hits:
+            # How far into the beat is this hit?
+            position = (hit_time - beat_start) / beat_duration
+
+            # If it's around the offbeat position (0.4-0.7 of the beat)
+            if 0.35 < position < 0.75:
+                # Calculate swing ratio
+                ratio = position * 100
+                offbeat_ratios.append(ratio)
+
+    if len(offbeat_ratios) < 2:
+        return 50.0
+
+    # Median of offbeat ratios gives swing percentage
+    swing = float(np.median(offbeat_ratios))
+
+    # Clamp to reasonable range
+    swing = max(40, min(75, swing))
+
+    return swing
+
+
+def quantize_to_grid(hits: List[DrumHit], bpm: float, downbeat_offset: float,
+                     swing: float = 50.0, quantize_strength: float = 1.0,
+                     subdivision: int = 4) -> Tuple[List[DrumHit], List[Dict]]:
+    """
+    Quantize hits to a rhythmic grid with swing awareness.
+
+    Args:
+        hits: List of drum hits
+        bpm: Tempo in BPM
+        downbeat_offset: Time of first downbeat
+        swing: Swing percentage (50 = straight, 67 = triplet)
+        quantize_strength: How much to quantize (0 = none, 1 = full)
+        subdivision: Grid resolution (4 = 16th notes per beat)
+
+    Returns:
+        Quantized hits and their grid positions
+    """
+    beat_duration = 60.0 / bpm
+    grid_duration = beat_duration / subdivision
+
+    # Swing offset for odd subdivisions
+    swing_ratio = swing / 100.0
+    swing_offset = (swing_ratio - 0.5) * grid_duration
+
+    quantized_hits = []
+    grid_positions = []
+
+    for hit in hits:
+        # Calculate position relative to downbeat
+        rel_time = hit.time - downbeat_offset
+
+        # Find nearest grid position
+        grid_index = round(rel_time / grid_duration)
+
+        # Apply swing to odd grid positions
+        if grid_index % 2 == 1:
+            grid_time = grid_index * grid_duration + swing_offset
+        else:
+            grid_time = grid_index * grid_duration
+
+        grid_time += downbeat_offset
+
+        # Interpolate between original and quantized time
+        quantized_time = hit.time + (grid_time - hit.time) * quantize_strength
+
+        # Calculate bar, beat, subbeat
+        total_beats = rel_time / beat_duration
+        bar = int(total_beats // 4) + 1  # Assuming 4/4
+        beat_in_bar = int(total_beats % 4) + 1
+        subbeat = int((total_beats % 1) * subdivision) + 1
+
+        quantized_hits.append(DrumHit(
+            time=quantized_time,
+            type=hit.type,
+            confidence=hit.confidence,
+            features=hit.features
+        ))
+
+        grid_positions.append({
+            'bar': bar,
+            'beat': beat_in_bar,
+            'subbeat': subbeat,
+            'original_time': hit.time,
+            'quantized_time': quantized_time
+        })
+
+    return quantized_hits, grid_positions
+
+
+# =============================================================================
+# FastAPI Application
+# =============================================================================
+
+app = FastAPI(
+    title='Rhythm Analyzer',
+    description='AI-powered rhythm detection and drum classification',
+    version='1.0.0'
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=['*'],
+    allow_credentials=True,
+    allow_methods=['*'],
+    allow_headers=['*'],
+)
+
+
+@app.get('/health')
+async def health_check():
+    """Health check endpoint"""
+    return {
+        'status': 'healthy',
+        'madmom_available': MADMOM_AVAILABLE,
+        'sklearn_available': SKLEARN_AVAILABLE,
+        'classifier_loaded': classifier is not None,
+        'gemini_available': GEMINI_AVAILABLE,
+        'port': PORT
+    }
+
+
+# =============================================================================
+# Gemini-Powered Drum Detection
+# =============================================================================
+
+def create_drum_spectrogram(y: np.ndarray, sr: int, duration: float) -> str:
+    """Create a spectrogram image optimized for drum detection and return as base64."""
+    fig, axes = plt.subplots(3, 1, figsize=(16, 8), facecolor='#1a1a2e')
+
+    # Full spectrogram
+    ax1 = axes[0]
+    D = librosa.amplitude_to_db(np.abs(librosa.stft(y, n_fft=2048, hop_length=512)), ref=np.max)
+    img1 = librosa.display.specshow(D, sr=sr, x_axis='time', y_axis='log', ax=ax1, cmap='magma')
+    ax1.set_title('Full Spectrogram (log scale)', color='white', fontsize=10)
+    ax1.set_facecolor('#1a1a2e')
+    ax1.tick_params(colors='white')
+    for spine in ax1.spines.values():
+        spine.set_color('white')
+
+    # Low frequency (kicks) - 20-200Hz
+    ax2 = axes[1]
+    y_low = librosa.effects.preemphasis(y)
+    D_low = librosa.amplitude_to_db(np.abs(librosa.stft(y_low, n_fft=4096, hop_length=512)), ref=np.max)
+    # Only show low frequencies
+    freq_bins = librosa.fft_frequencies(sr=sr, n_fft=4096)
+    low_mask = freq_bins <= 300
+    D_low_filtered = D_low[low_mask, :]
+    img2 = ax2.imshow(D_low_filtered, aspect='auto', origin='lower', cmap='Reds',
+                      extent=[0, duration, 0, 300])
+    ax2.set_title('Low Frequencies (Kicks: 20-300Hz)', color='white', fontsize=10)
+    ax2.set_ylabel('Hz', color='white')
+    ax2.set_facecolor('#1a1a2e')
+    ax2.tick_params(colors='white')
+    for spine in ax2.spines.values():
+        spine.set_color('white')
+
+    # High frequency (hi-hats) - 5kHz-20kHz
+    ax3 = axes[2]
+    D_high = librosa.amplitude_to_db(np.abs(librosa.stft(y, n_fft=2048, hop_length=256)), ref=np.max)
+    freq_bins_high = librosa.fft_frequencies(sr=sr, n_fft=2048)
+    high_mask = freq_bins_high >= 5000
+    D_high_filtered = D_high[high_mask, :]
+    times = librosa.times_like(D_high[0, :], sr=sr, hop_length=256)
+    img3 = ax3.imshow(D_high_filtered, aspect='auto', origin='lower', cmap='YlOrRd',
+                      extent=[0, duration, 5000, 20000])
+    ax3.set_title('High Frequencies (Hi-hats: 5kHz-20kHz)', color='white', fontsize=10)
+    ax3.set_xlabel('Time (s)', color='white')
+    ax3.set_ylabel('Hz', color='white')
+    ax3.set_facecolor('#1a1a2e')
+    ax3.tick_params(colors='white')
+    for spine in ax3.spines.values():
+        spine.set_color('white')
+
+    plt.tight_layout()
+
+    # Save to base64
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', facecolor='#1a1a2e', dpi=100)
+    buf.seek(0)
+    img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+    plt.close(fig)
+
+    return img_base64
+
+
+async def analyze_with_gemini(audio_path: str, spectrogram_base64: str, bpm: float, duration: float) -> List[Dict]:
+    """Use Gemini to analyze drums from audio and spectrogram."""
+    if not GEMINI_AVAILABLE or genai is None:
+        raise HTTPException(status_code=503, detail='Gemini API not available')
+
+    # Configure Gemini
+    api_key = os.getenv('GOOGLE_API_KEY')
+    if not api_key:
+        raise HTTPException(status_code=503, detail='GOOGLE_API_KEY not set')
+
+    genai.configure(api_key=api_key)
+
+    # Load audio for Gemini
+    audio_file = genai.upload_file(audio_path)
+
+    prompt = f"""You are an expert drum transcription AI. Analyze this audio file and identify ALL drum hits.
+
+AUDIO INFO:
+- Duration: {duration:.2f} seconds
+- Detected BPM: {bpm:.1f}
+- Time signature: 4/4
+
+TASK: Listen carefully to the audio and identify EVERY drum hit. For each hit, provide:
+1. The exact timestamp in seconds (to 3 decimal places)
+2. The drum type: kick, snare, hihat, clap, tom, or perc
+
+DRUM IDENTIFICATION GUIDE:
+- KICK: Low thump/boom sound (808, acoustic kick), usually on beats 1 and 3 (sometimes every beat in EDM)
+- SNARE: Sharp crack sound with body, usually on beats 2 and 4
+- HIHAT: High-pitched metallic "tss", "chick", or "sizzle" sound, often on 8th or 16th notes
+- CLAP: Layered hand-clap sound with diffuse attack, often on beats 2 and 4
+- TOM: Mid-pitched drum with tonal sustain, used in fills (floor tom, rack tom)
+- PERC: ALL other percussion including: wood blocks, rim shots, clave, cowbell, tambourine, shaker, bongo, conga, guiro, triangle, agogo, maracas, cabasa, timbales, djembe, or any percussive hit that doesn't fit the above categories
+
+OUTPUT FORMAT - Return ONLY a JSON array, no other text:
+[
+  {{"time": 0.125, "type": "kick"}},
+  {{"time": 0.250, "type": "hihat"}},
+  {{"time": 0.500, "type": "snare"}},
+  ...
+]
+
+IMPORTANT:
+- Listen to the ACTUAL audio, not just the spectrogram
+- Be precise with timestamps - drums have sharp transients
+- Include ALL hits you can hear, even quiet ones
+- LISTEN CAREFULLY FOR QUIET PERCUSSION - wood blocks, claves, and similar instruments are often mixed LOW in volume but still important to the groove
+- Scan the ENTIRE track from start to finish - percussion elements often enter LATER in the song (verse 2, chorus, etc.)
+- DON'T MISS any wood block, clave, rim shot, or pitched percussion sounds - classify these as "perc"
+- Typical EDM/Pop has kick on 1,3 and snare/clap on 2,4
+- Hi-hats are usually on every 8th note (0.25 seconds apart at 120 BPM)
+- If you hear a distinctive rhythmic element that's NOT kick/snare/hihat, it's probably "perc"
+- CRITICAL: Don't stop listening after the first section - keep detecting hits throughout the ENTIRE song duration
+
+Return ONLY the JSON array, no explanation."""
+
+    try:
+        # Use Gemini 2.5 Pro for better audio analysis accuracy
+        model = genai.GenerativeModel('gemini-2.5-pro-preview-05-06')
+        response = model.generate_content([audio_file, prompt])
+
+        # Parse JSON from response
+        response_text = response.text.strip()
+
+        # Try to extract JSON array from response
+        # Handle cases where response might have markdown code blocks
+        if '```json' in response_text:
+            response_text = response_text.split('```json')[1].split('```')[0].strip()
+        elif '```' in response_text:
+            response_text = response_text.split('```')[1].split('```')[0].strip()
+
+        # Parse the JSON
+        hits = json.loads(response_text)
+
+        # Validate and clean hits
+        valid_types = {'kick', 'snare', 'hihat', 'clap', 'tom', 'perc'}
+        cleaned_hits = []
+        for hit in hits:
+            if isinstance(hit, dict) and 'time' in hit and 'type' in hit:
+                hit_type = hit['type'].lower()
+                if hit_type in valid_types:
+                    cleaned_hits.append({
+                        'time': float(hit['time']),
+                        'type': hit_type,
+                        'confidence': 0.9  # Gemini confidence
+                    })
+
+        logger.info(f'Gemini detected {len(cleaned_hits)} drum hits')
+        return cleaned_hits
+
+    except json.JSONDecodeError as e:
+        logger.error(f'Failed to parse Gemini response: {e}')
+        logger.error(f'Response was: {response_text[:500]}')
+        raise HTTPException(status_code=500, detail=f'Failed to parse Gemini response: {e}')
+    except Exception as e:
+        logger.error(f'Gemini analysis failed: {e}')
+        raise HTTPException(status_code=500, detail=f'Gemini analysis failed: {e}')
+
+
+@app.post('/analyze-rhythm-ai')
+async def analyze_rhythm_with_ai(
+    audio: UploadFile = File(...),
+    apply_pattern_filter: bool = Form(False),  # Not needed - beat-aligned is already on grid
+    pattern_tolerance_ms: float = Form(100),
+):
+    """
+    AI-enhanced rhythm analysis using beat-aligned detection.
+    More reliable than Gemini audio classification.
+    """
+    start_time = time.time()
+    file_id = str(uuid.uuid4())[:8]
+    temp_path = TEMP_DIR / f'{file_id}_{audio.filename}'
+
+    try:
+        # Save uploaded file
+        content = await audio.read()
+        with open(temp_path, 'wb') as f:
+            f.write(content)
+
+        # Load audio
+        y, sr = load_audio(str(temp_path))
+        duration = len(y) / sr
+
+        logger.info(f'AI analysis: {duration:.1f}s of audio...')
+
+        # Step 1: Detect BPM and beats
+        beat_result, method = detect_beats(str(temp_path), y, sr)
+        logger.info(f'Detected {beat_result.bpm:.1f} BPM, {len(beat_result.beats)} beats')
+
+        # Step 2: Beat-aligned drum detection (reliable method)
+        beats_array = np.array(beat_result.beats)
+        beat_aligned_hits = detect_drums_beat_aligned(
+            y, sr, beats_array, beat_result.time_signature
+        )
+
+        # Convert to DrumHit objects
+        hits = []
+        for drum_type, times in beat_aligned_hits.items():
+            for t in times:
+                hits.append(DrumHit(
+                    time=float(t),
+                    type=drum_type,
+                    confidence=0.85,
+                    features=None
+                ))
+
+        hits.sort(key=lambda h: h.time)
+
+        # Detect swing and genre
+        swing = detect_swing(hits, beat_result.beats, beat_result.time_signature)
+        detected_genre, genre_confidence = detect_genre(beat_result.bpm, hits, swing)
+
+        # Count hits by type
+        hit_counts = {}
+        for h in hits:
+            hit_counts[h.type] = hit_counts.get(h.type, 0) + 1
+        logger.info(f'Detected: {hit_counts}')
+
+        hits_before_filter = len(hits)
+        pattern_filter_applied = False
+
+        hits_after_filter = len(hits)
+
+        elapsed = time.time() - start_time
+        analysis_method = 'gemini-ai'
+        if pattern_filter_applied:
+            analysis_method += '+pattern_filter'
+
+        logger.info(f'Gemini analysis complete in {elapsed:.2f}s')
+        logger.info(f'Final hits: {len([h for h in hits if h.type=="kick"])} kicks, '
+                   f'{len([h for h in hits if h.type=="snare"])} snares, '
+                   f'{len([h for h in hits if h.type=="clap"])} claps, '
+                   f'{len([h for h in hits if h.type=="hihat"])} hihats')
+
+        return RhythmAnalysisResult(
+            bpm=beat_result.bpm,
+            bpm_confidence=beat_result.bpm_confidence,
+            beats=beat_result.beats,
+            downbeats=beat_result.downbeats,
+            time_signature=beat_result.time_signature,
+            hits=[h.model_dump() for h in hits],
+            swing=swing,
+            analysis_method=analysis_method,
+            duration=duration,
+            analysis_source='gemini_ai',
+            detected_genre=detected_genre,
+            genre_confidence=genre_confidence,
+            pattern_filter_applied=pattern_filter_applied,
+            hits_before_filter=hits_before_filter,
+            hits_after_filter=hits_after_filter,
+        )
+
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+# =============================================================================
+# Pattern-Based Filter - Keeps only hits at expected positions
+# =============================================================================
+
+# Expected beat positions per drum type (in beats, 0 = beat 1, 0.5 = 8th note, 0.25 = 16th note)
+EXPECTED_POSITIONS = {
+    'kick': {
+        'edm': [0, 1, 2, 3],  # Every beat (4-on-floor)
+        'pop': [0, 2],  # Beats 1 and 3
+        'trap': [0, 2.5],  # Beat 1, syncopated
+        'afro_house': [0, 2],  # Sparse kicks
+        'default': [0, 2],  # Beats 1 and 3
+    },
+    'snare': {
+        'edm': [1, 3],  # Beats 2 and 4
+        'pop': [1, 3],  # Beats 2 and 4
+        'trap': [2],  # Half-time, beat 3
+        'afro_house': [1, 3],  # Beats 2 and 4
+        'default': [1, 3],
+    },
+    'clap': {
+        'edm': [1, 3],  # Beats 2 and 4
+        'pop': [1, 3],
+        'trap': [2],  # Half-time
+        'afro_house': [1, 3],
+        'default': [1, 3],
+    },
+    'hihat': {
+        # Hi-hats can be on 8th notes (every 0.5 beats) or 16th notes (every 0.25 beats)
+        'edm': [i * 0.5 for i in range(8)],  # 8th notes
+        'pop': [i * 0.5 for i in range(8)],
+        'trap': [i * 0.25 for i in range(16)],  # 16th notes (rolling hats)
+        'afro_house': [i * 0.5 for i in range(8)],
+        'default': [i * 0.5 for i in range(8)],
+    },
+    'tom': {
+        # Toms are fills - less predictable, but usually on beats
+        'default': [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],  # Any beat or off-beat
+    },
+    'perc': {
+        # Percussion can be anywhere
+        'default': [i * 0.25 for i in range(16)],  # Allow any 16th note
+    },
+}
+
+
+def filter_hits_by_pattern(
+    hits: List[DrumHit],
+    bpm: float,
+    downbeat_time: float,
+    time_signature: int = 4,
+    genre: Optional[str] = None,
+    tolerance_ms: float = 80  # How close to expected position (in ms)
+) -> List[DrumHit]:
+    """
+    Filter hits to keep only those near expected pattern positions.
+
+    This removes false positives by checking if each hit falls near
+    a musically expected position for its drum type.
+    """
+    if not hits:
+        return []
+
+    beat_duration = 60 / bpm  # seconds per beat
+    bar_duration = beat_duration * time_signature
+    tolerance_sec = tolerance_ms / 1000
+
+    filtered = []
+    stats = {drum: {'kept': 0, 'removed': 0} for drum in EXPECTED_POSITIONS.keys()}
+
+    for hit in hits:
+        drum_type = hit.type
+        hit_time = hit.time
+
+        # Get expected positions for this drum type and genre
+        positions_dict = EXPECTED_POSITIONS.get(drum_type, {'default': [i * 0.5 for i in range(8)]})
+        expected_positions = positions_dict.get(genre, positions_dict.get('default', []))
+
+        # Calculate position within the bar
+        time_from_downbeat = hit_time - downbeat_time
+        if time_from_downbeat < 0:
+            # Before downbeat - skip or adjust
+            stats[drum_type]['removed'] = stats.get(drum_type, {}).get('removed', 0) + 1
+            continue
+
+        bar_position = (time_from_downbeat % bar_duration) / beat_duration  # Position in beats (0-4)
+
+        # Check if this position is near any expected position
+        is_expected = False
+        for expected_pos in expected_positions:
+            # Check distance to expected position (accounting for bar wrap-around)
+            distance = abs(bar_position - expected_pos)
+            distance_sec = distance * beat_duration
+
+            if distance_sec <= tolerance_sec:
+                is_expected = True
+                break
+
+        if is_expected:
+            filtered.append(hit)
+            if drum_type in stats:
+                stats[drum_type]['kept'] += 1
+        else:
+            if drum_type in stats:
+                stats[drum_type]['removed'] += 1
+
+    # Log filter stats
+    logger.info(f'Pattern filter stats (genre={genre}, tolerance={tolerance_ms}ms):')
+    for drum, counts in stats.items():
+        if counts['kept'] + counts['removed'] > 0:
+            logger.info(f'  {drum}: kept {counts["kept"]}, removed {counts["removed"]}')
+
+    return filtered
+
+
+@app.post('/filter-hits-by-pattern')
+async def filter_hits_endpoint(
+    hits: List[Dict] = [],
+    bpm: float = 120,
+    downbeat_time: float = 0,
+    time_signature: int = 4,
+    genre: Optional[str] = None,
+    tolerance_ms: float = 80,
+):
+    """
+    Filter detected hits to keep only those at expected pattern positions.
+    Use this after detection to clean up false positives.
+    """
+    # Convert dicts to DrumHit objects
+    drum_hits = [DrumHit(
+        time=h['time'],
+        type=h['type'],
+        confidence=h.get('confidence', 0.8),
+        features=None
+    ) for h in hits]
+
+    filtered = filter_hits_by_pattern(
+        drum_hits, bpm, downbeat_time, time_signature, genre, tolerance_ms
+    )
+
+    return {
+        'original_count': len(hits),
+        'filtered_count': len(filtered),
+        'hits': [h.model_dump() for h in filtered]
+    }
+
+
+async def separate_drums_stem(audio_path: str, max_retries: int = 2) -> Tuple[Optional[str], str]:
+    """
+    Call the stem separator service to extract drums stem.
+    Returns tuple of (path_to_drums_stem, status_message).
+    path is None if separation failed.
+    """
+    import aiohttp
+    import asyncio
+
+    STEM_SEPARATOR_URL = 'http://localhost:56402'
+
+    for attempt in range(max_retries + 1):
+        try:
+            if attempt > 0:
+                logger.info(f'Retry attempt {attempt}/{max_retries} for stem separation...')
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+
+            logger.info('Step 1: Checking stem separator service health...')
+
+            # First check if service is available
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                try:
+                    async with session.get(f'{STEM_SEPARATOR_URL}/health') as health_resp:
+                        if health_resp.status != 200:
+                            logger.warning(f'Stem separator service unhealthy: {health_resp.status}')
+                            continue  # Retry
+                        logger.info('Stem separator service is healthy')
+                except aiohttp.ClientError as e:
+                    logger.warning(f'Cannot connect to stem separator: {e}')
+                    if attempt == max_retries:
+                        return None, f'Stem separator service unavailable: {e}'
+                    continue
+
+            logger.info('Step 2: Reading audio file for upload...')
+
+            # Read file content BEFORE creating FormData to avoid file handle issues
+            try:
+                with open(audio_path, 'rb') as f:
+                    file_content = f.read()
+                file_name = Path(audio_path).name
+                logger.info(f'Read {len(file_content)} bytes from {file_name}')
+            except Exception as e:
+                logger.error(f'Failed to read audio file: {e}')
+                return None, f'Failed to read audio file: {e}'
+
+            logger.info('Step 3: Uploading file to stem separator...')
+
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as session:
+                # Create FormData with file content (not file handle)
+                data = aiohttp.FormData()
+                data.add_field('file', file_content, filename=file_name, content_type='audio/mpeg')
+                data.add_field('model', 'htdemucs')
+
+                async with session.post(f'{STEM_SEPARATOR_URL}/separate', data=data) as resp:
+                    if resp.status != 200:
+                        resp_text = await resp.text()
+                        logger.warning(f'Stem separation upload failed: {resp.status} - {resp_text[:200]}')
+                        if attempt == max_retries:
+                            return None, f'Upload failed with status {resp.status}'
+                        continue
+                    result = await resp.json()
+                    job_id = result.get('job_id')
+                    logger.info(f'Stem separation job created: {job_id}')
+
+                if not job_id:
+                    logger.warning('No job_id returned from stem separator')
+                    if attempt == max_retries:
+                        return None, 'No job ID returned from stem separator'
+                    continue
+
+                logger.info('Step 4: Polling for separation completion...')
+
+                # Poll for completion with progress logging
+                poll_count = 0
+                max_polls = 180  # Max 3 minutes (1 poll per second)
+                while poll_count < max_polls:
+                    await asyncio.sleep(1)
+                    poll_count += 1
+
+                    try:
+                        async with session.get(f'{STEM_SEPARATOR_URL}/jobs/{job_id}') as resp:
+                            if resp.status != 200:
+                                logger.warning(f'Poll request failed: {resp.status}')
+                                continue
+                            status = await resp.json()
+                            job_status = status.get('status')
+                            progress = status.get('progress', 0)
+
+                            # Log progress every 10 seconds
+                            if poll_count % 10 == 0:
+                                logger.info(f'Separation progress: {progress}% (poll {poll_count}/{max_polls})')
+
+                            if job_status == 'completed':
+                                stems = status.get('stems', {})
+                                drums_file = stems.get('drums')
+                                if not drums_file:
+                                    logger.warning('Separation completed but no drums stem found')
+                                    return None, 'No drums stem in separation result'
+
+                                logger.info(f'Step 5: Downloading drums stem: {drums_file}')
+
+                                # Download drums stem
+                                async with session.get(f'{STEM_SEPARATOR_URL}/stems/{job_id}/{drums_file}') as stem_resp:
+                                    if stem_resp.status == 200:
+                                        drums_path = TEMP_DIR / f'drums_{job_id}.mp3'
+                                        stem_content = await stem_resp.read()
+                                        with open(drums_path, 'wb') as out:
+                                            out.write(stem_content)
+                                        logger.info(f'SUCCESS: Drums stem saved ({len(stem_content)} bytes): {drums_path}')
+                                        return str(drums_path), 'Drums stem separated successfully'
+                                    else:
+                                        logger.warning(f'Failed to download drums stem: {stem_resp.status}')
+                                        return None, f'Failed to download drums stem: {stem_resp.status}'
+
+                            elif job_status == 'failed':
+                                error_msg = status.get('error', 'Unknown error')
+                                logger.warning(f'Stem separation job failed: {error_msg}')
+                                if attempt == max_retries:
+                                    return None, f'Separation failed: {error_msg}'
+                                break  # Retry
+
+                    except aiohttp.ClientError as e:
+                        logger.warning(f'Poll request error: {e}')
+                        # Continue polling, don't fail immediately
+                        continue
+
+                # Polling timeout
+                if poll_count >= max_polls:
+                    logger.warning(f'Stem separation timed out after {max_polls} seconds')
+                    if attempt == max_retries:
+                        return None, 'Stem separation timed out'
+
+        except aiohttp.ClientError as e:
+            logger.warning(f'Stem separation connection error: {e}')
+            if attempt == max_retries:
+                return None, f'Connection error: {e}'
+
+        except Exception as e:
+            logger.error(f'Stem separation unexpected error: {e}')
+            if attempt == max_retries:
+                return None, f'Unexpected error: {e}'
+
+    return None, 'Max retries exceeded'
+
+
+def detect_genre(bpm: float, hits: List[DrumHit], swing: float) -> Tuple[Optional[str], float]:
+    """
+    Detect genre based on BPM range and drum pattern characteristics.
+    Returns (genre_name, confidence).
+    """
+    # Count hit types
+    kick_count = len([h for h in hits if h.type == 'kick'])
+    snare_count = len([h for h in hits if h.type == 'snare'])
+    clap_count = len([h for h in hits if h.type == 'clap'])
+    hihat_count = len([h for h in hits if h.type == 'hihat'])
+
+    # Calculate ratios
+    total_hits = max(len(hits), 1)
+    kick_ratio = kick_count / total_hits
+    snare_ratio = snare_count / total_hits
+    clap_ratio = clap_count / total_hits
+    hihat_ratio = hihat_count / total_hits
+
+    # Genre detection rules based on BPM and pattern characteristics
+    genre_scores = {}
+
+    # EDM / House: 120-135 BPM, 4-on-floor kick, claps on 2/4
+    if 118 <= bpm <= 138:
+        score = 0.5
+        if kick_ratio > 0.15:  # Lots of kicks (4-on-floor)
+            score += 0.2
+        if clap_ratio > 0.08 or snare_ratio > 0.08:  # Claps/snares present
+            score += 0.15
+        if abs(swing - 50) < 5:  # Straight timing
+            score += 0.15
+        genre_scores['edm'] = min(score, 1.0)
+
+    # Afro House: 118-128 BPM, sparse kick, high swing
+    if 115 <= bpm <= 130:
+        score = 0.4
+        if kick_ratio < 0.15:  # Sparse kicks
+            score += 0.15
+        if swing > 54:  # Swung timing
+            score += 0.25
+        if hihat_ratio > 0.2:  # Lots of hi-hats/shakers
+            score += 0.15
+        genre_scores['afro_house'] = min(score, 1.0)
+
+    # Trap: 60-85 BPM (or 120-170 half-time feel), half-time snare
+    if 60 <= bpm <= 90 or (130 <= bpm <= 180):
+        score = 0.4
+        if snare_ratio < 0.08:  # Sparse snares (half-time)
+            score += 0.2
+        if hihat_ratio > 0.3:  # Lots of hi-hats (rolling hats)
+            score += 0.2
+        if kick_ratio < 0.12:  # Sparse kicks
+            score += 0.15
+        genre_scores['trap'] = min(score, 1.0)
+
+    # Pop: 90-130 BPM, backbeat snare
+    if 85 <= bpm <= 135:
+        score = 0.35
+        if snare_ratio > 0.08:  # Regular snares
+            score += 0.2
+        if kick_ratio > 0.08 and kick_ratio < 0.25:  # Moderate kicks
+            score += 0.15
+        if 48 <= swing <= 55:  # Slight swing or straight
+            score += 0.15
+        genre_scores['pop'] = min(score, 1.0)
+
+    # Hip Hop / Boom Bap: 85-115 BPM, swung
+    if 80 <= bpm <= 120:
+        score = 0.35
+        if 52 <= swing <= 62:  # Swung timing
+            score += 0.25
+        if snare_ratio > 0.06:
+            score += 0.15
+        if kick_ratio > 0.06 and kick_ratio < 0.20:
+            score += 0.15
+        genre_scores['hip_hop'] = min(score, 1.0)
+
+    # K-Pop: 100-140 BPM, high energy, varied patterns
+    if 95 <= bpm <= 145:
+        score = 0.3
+        if kick_ratio > 0.12 and snare_ratio > 0.08:
+            score += 0.2
+        if clap_ratio > 0.05:
+            score += 0.15
+        genre_scores['kpop'] = min(score, 1.0)
+
+    # Find best match
+    if not genre_scores:
+        return None, 0.0
+
+    best_genre = max(genre_scores, key=genre_scores.get)
+    best_confidence = genre_scores[best_genre]
+
+    # Only return if confidence is above threshold
+    if best_confidence < 0.5:
+        return None, 0.0
+
+    return best_genre, best_confidence
+
+
+@app.post('/analyze-rhythm', response_model=RhythmAnalysisResult)
+async def analyze_rhythm(
+    audio: UploadFile = File(...),
+    use_stem: bool = Form(True),  # Default to using stem separation for accuracy
+    apply_pattern_filter: bool = Form(True),  # Filter hits to expected positions
+    pattern_tolerance_ms: float = Form(100),  # Tolerance for pattern matching (ms)
+):
+    """
+    Full rhythm analysis pipeline:
+    1. (Optional) Separate drums stem for accurate analysis
+    2. Beat/downbeat detection
+    3. Onset detection per drum type
+    4. Swing detection
+    5. Genre detection
+    6. Pattern-based filtering (removes false positives)
+    """
+    start_time = time.time()
+
+    # Save uploaded file
+    file_id = str(uuid.uuid4())[:8]
+    temp_path = TEMP_DIR / f'{file_id}_{audio.filename}'
+    drums_path = None
+    stem_status = None
+
+    try:
+        # Write to temp file
+        content = await audio.read()
+        with open(temp_path, 'wb') as f:
+            f.write(content)
+
+        # Load original audio for beat detection (full mix is better for tempo)
+        y_full, sr = load_audio(str(temp_path))
+        duration = len(y_full) / sr
+
+        logger.info(f'Analyzing {duration:.1f}s of audio...')
+
+        # Stage 1: Beat detection from full mix (tempo detection works better on full mix)
+        beat_result, method = detect_beats(str(temp_path), y_full, sr)
+
+        # Stage 2: Optionally separate drums stem for accurate drum detection
+        if use_stem:
+            drums_path, stem_status = await separate_drums_stem(str(temp_path))
+            logger.info(f'Stem separation result: {stem_status}')
+
+        # Use drums stem if available, otherwise fall back to full mix
+        if drums_path:
+            y_drums, sr = load_audio(drums_path)
+            logger.info('Using separated drums stem for detection')
+            analysis_source = 'drums_stem'
+        else:
+            y_drums = y_full
+            logger.info(f'Using full mix for detection ({stem_status or "stem separation disabled"})')
+            analysis_source = 'full_mix'
+
+        # Stage 3: Beat-aligned drum detection
+        # This checks for drum energy AT beat positions (more reliable than free detection)
+        logger.info('Stage 3: Beat-aligned drum detection...')
+        beats_array = np.array(beat_result.beats)
+        beat_aligned_hits = detect_drums_beat_aligned(
+            y_drums, sr, beats_array, beat_result.time_signature
+        )
+
+        # Convert to DrumHit objects
+        hits = []
+        for drum_type, times in beat_aligned_hits.items():
+            for t in times:
+                confidence = 0.90 if drums_path else 0.70
+                hits.append(DrumHit(
+                    time=float(t),
+                    type=drum_type,
+                    confidence=confidence,
+                    features=None
+                ))
+
+        # Sort by time
+        hits.sort(key=lambda h: h.time)
+
+        # Count by type for logging
+        hit_counts = {}
+        for h in hits:
+            hit_counts[h.type] = hit_counts.get(h.type, 0) + 1
+
+        logger.info(f'Detected {len(hits)} total hits: ' +
+                   ', '.join(f'{k}={v}' for k, v in hit_counts.items()))
+
+        # Stage 5: Swing detection
+        swing = detect_swing(hits, beat_result.beats, beat_result.time_signature)
+
+        # Stage 6: Genre detection
+        detected_genre, genre_confidence = detect_genre(beat_result.bpm, hits, swing)
+
+        # Stage 7: Pattern-based filtering (removes false positives)
+        hits_before_filter = len(hits)
+        pattern_filter_applied = False
+
+        if apply_pattern_filter and beat_result.downbeats:
+            logger.info(f'Stage 7: Applying pattern filter (genre={detected_genre}, tolerance={pattern_tolerance_ms}ms)...')
+            downbeat_time = beat_result.downbeats[0]['time'] if beat_result.downbeats else 0
+            hits = filter_hits_by_pattern(
+                hits,
+                bpm=beat_result.bpm,
+                downbeat_time=downbeat_time,
+                time_signature=beat_result.time_signature,
+                genre=detected_genre,
+                tolerance_ms=pattern_tolerance_ms
+            )
+            pattern_filter_applied = True
+            logger.info(f'Pattern filter: {hits_before_filter} → {len(hits)} hits ({hits_before_filter - len(hits)} removed)')
+
+        hits_after_filter = len(hits)
+
+        elapsed = time.time() - start_time
+        analysis_method = f'{method}+{analysis_source}'
+        if pattern_filter_applied:
+            analysis_method += '+pattern_filter'
+
+        logger.info(f'Analysis complete in {elapsed:.2f}s using {analysis_method}')
+        logger.info(f'Analysis source: {analysis_source}')
+        if detected_genre:
+            logger.info(f'Detected genre: {detected_genre} ({genre_confidence*100:.0f}% confidence)')
+        logger.info(f'Final hits: {len([h for h in hits if h.type=="kick"])} kicks, '
+                   f'{len([h for h in hits if h.type=="snare"])} snares, '
+                   f'{len([h for h in hits if h.type=="clap"])} claps, '
+                   f'{len([h for h in hits if h.type=="hihat"])} hihats')
+
+        return RhythmAnalysisResult(
+            bpm=beat_result.bpm,
+            bpm_confidence=beat_result.bpm_confidence,
+            beats=beat_result.beats,
+            downbeats=beat_result.downbeats,
+            time_signature=beat_result.time_signature,
+            hits=[h.model_dump() for h in hits],
+            swing=swing,
+            analysis_method=analysis_method,
+            duration=duration,
+            analysis_source=analysis_source,
+            detected_genre=detected_genre,
+            genre_confidence=genre_confidence,
+            pattern_filter_applied=pattern_filter_applied,
+            hits_before_filter=hits_before_filter,
+            hits_after_filter=hits_after_filter,
+        )
+
+    finally:
+        # Cleanup
+        if temp_path.exists():
+            temp_path.unlink()
+        if drums_path and Path(drums_path).exists():
+            Path(drums_path).unlink()
+
+
+@app.post('/detect-beats', response_model=BeatResult)
+async def detect_beats_endpoint(audio: UploadFile = File(...)):
+    """Detect BPM, beats, and downbeats only"""
+    file_id = str(uuid.uuid4())[:8]
+    temp_path = TEMP_DIR / f'{file_id}_{audio.filename}'
+
+    try:
+        content = await audio.read()
+        with open(temp_path, 'wb') as f:
+            f.write(content)
+
+        y, sr = load_audio(str(temp_path))
+        beat_result, method = detect_beats(str(temp_path), y, sr)
+
+        return beat_result
+
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+@app.post('/classify-hits')
+async def classify_hits_endpoint(
+    audio: UploadFile = File(...),
+    onset_times: str = Form(...)  # JSON array of onset times
+):
+    """Classify provided onset times as drum types"""
+    import json
+
+    file_id = str(uuid.uuid4())[:8]
+    temp_path = TEMP_DIR / f'{file_id}_{audio.filename}'
+
+    try:
+        content = await audio.read()
+        with open(temp_path, 'wb') as f:
+            f.write(content)
+
+        y, sr = load_audio(str(temp_path))
+
+        # Parse onset times
+        onsets = np.array(json.loads(onset_times))
+
+        # Classify
+        hits = classify_hits(y, sr, onsets)
+
+        return {'hits': [h.model_dump() for h in hits]}
+
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+@app.post('/quantize-grid', response_model=QuantizeResult)
+async def quantize_grid_endpoint(request: QuantizeRequest):
+    """Quantize hits to grid with swing awareness"""
+    hits = [DrumHit(**h) for h in request.hits]
+
+    quantized, positions = quantize_to_grid(
+        hits=hits,
+        bpm=request.bpm,
+        downbeat_offset=request.downbeat_offset,
+        swing=request.swing,
+        quantize_strength=request.quantize_strength
+    )
+
+    return QuantizeResult(
+        hits=quantized,
+        grid_positions=positions
+    )
+
+
+@app.post('/quantize-instrument')
+async def quantize_instrument_endpoint(request: QuantizeInstrumentRequest):
+    """
+    Quantize a single instrument's hits with specific settings.
+
+    This allows per-instrument swing and quantization settings,
+    enabling patterns like:
+    - Straight kicks (50% swing, 100% quantize to 1/4)
+    - Swung hi-hats (58% swing, 75% quantize to 1/16)
+    """
+    # Filter hits by drum type and convert to DrumHit objects
+    instrument_hits = []
+    for h in request.hits:
+        if h.get('type') == request.drum_type:
+            instrument_hits.append(DrumHit(
+                time=h.get('time', 0),
+                type=request.drum_type,
+                confidence=h.get('confidence', 1.0),
+                features=h.get('features')
+            ))
+
+    if not instrument_hits:
+        return {
+            'hits': [],
+            'grid_positions': [],
+            'drum_type': request.drum_type
+        }
+
+    quantized, positions = quantize_to_grid(
+        hits=instrument_hits,
+        bpm=request.bpm,
+        downbeat_offset=request.downbeat_offset,
+        swing=request.swing,
+        quantize_strength=request.quantize_strength,
+        subdivision=request.subdivision
+    )
+
+    return {
+        'hits': [h.model_dump() for h in quantized],
+        'grid_positions': positions,
+        'drum_type': request.drum_type
+    }
+
+
+@app.post('/shift-downbeat')
+async def shift_downbeat(
+    beats: List[float],
+    downbeats: List[Dict[str, Any]],
+    shift_beats: int = 1
+):
+    """
+    Shift downbeat position by N beats.
+    Positive = shift forward, Negative = shift backward
+    """
+    if not downbeats:
+        return {'downbeats': downbeats, 'shifted': 0}
+
+    time_signature = max(d['beat_position'] for d in downbeats)
+
+    new_downbeats = []
+    for d in downbeats:
+        new_position = ((d['beat_position'] - 1 + shift_beats) % time_signature) + 1
+        new_downbeats.append({
+            'time': d['time'],
+            'beat_position': new_position
+        })
+
+    return {
+        'downbeats': new_downbeats,
+        'shifted': shift_beats,
+        'time_signature': time_signature
+    }
+
+
+@app.get('/available-methods')
+async def get_available_methods():
+    """Return available analysis methods and their status"""
+    return {
+        'beat_detection': {
+            'madmom': MADMOM_AVAILABLE,
+            'librosa': True  # Always available
+        },
+        'onset_detection': {
+            'madmom': MADMOM_AVAILABLE,
+            'librosa': True
+        },
+        'classification': {
+            'ml': SKLEARN_AVAILABLE and classifier is not None,
+            'rules': True  # Always available
+        }
+    }
+
+
+# =============================================================================
+# Knowledge Lab Pattern Database
+# Comprehensive patterns from Music Production Master Template
+# =============================================================================
+
+def parse_notation(notation: str) -> List[int]:
+    """Parse notation string like 'X - - - X - - -' to step indices"""
+    steps = notation.split(' ')
+    return [i for i, s in enumerate(steps) if s.upper() in ['X', 'O']]
+
+
+# Known drum patterns from Knowledge Lab
+KNOWN_PATTERNS = {
+    # === POP PATTERNS ===
+    'pop_standard': {
+        'name': 'Standard Pop Beat',
+        'genre': 'pop',
+        'description': 'Basic backbeat - most common pop pattern',
+        'kick': [0, 8],           # Beats 1, 3
+        'snare': [4, 12],         # Beats 2, 4
+        'hihat': [0, 2, 4, 6, 8, 10, 12, 14],  # 8th notes
+        'swing': 50
+    },
+    'pop_four_on_floor': {
+        'name': 'Four-on-Floor Pop',
+        'genre': 'pop',
+        'description': 'Dance-pop with kick on every beat',
+        'kick': [0, 4, 8, 12],    # Every beat
+        'snare': [4, 12],         # Beats 2, 4
+        'hihat': [0, 2, 4, 6, 8, 10, 12, 14],
+        'swing': 50
+    },
+    'pop_halftime': {
+        'name': 'Halftime Pop',
+        'genre': 'pop',
+        'description': 'Half-time feel with snare on beat 3',
+        'kick': [0],              # Beat 1 only
+        'snare': [8],             # Beat 3 only
+        'hihat': [0, 2, 4, 6, 8, 10, 12, 14],
+        'swing': 50
+    },
+    'pop_syncopated': {
+        'name': 'Syncopated Pop',
+        'genre': 'pop',
+        'description': 'Complex rhythm with off-beat kicks',
+        'kick': [0, 6, 10],       # Beat 1, + of 2, + of 3
+        'snare': [4, 12],         # Beats 2, 4
+        'hihat': [0, 2, 4, 6, 8, 10, 12, 14],
+        'swing': 52
+    },
+
+    # === EDM PATTERNS ===
+    'edm_four_on_floor': {
+        'name': 'EDM Four-on-Floor',
+        'genre': 'edm',
+        'description': 'Foundation of house, techno, EDM',
+        'kick': [0, 4, 8, 12],    # Every beat
+        'clap': [4, 12],          # Beats 2, 4
+        'snare': [4, 12],         # Alternative to clap
+        'hihat': [2, 6, 10, 14],  # Off-beats
+        'swing': 0
+    },
+    'edm_offbeat_house': {
+        'name': 'Offbeat House',
+        'genre': 'edm',
+        'description': 'Classic house with off-beat hi-hats',
+        'kick': [0, 4, 8, 12],
+        'clap': [4, 12],
+        'snare': [4, 12],
+        'hihat': [1, 3, 5, 7, 9, 11, 13, 15],  # Every off-beat 16th
+        'swing': 0
+    },
+    'edm_techno': {
+        'name': 'Techno Pattern',
+        'genre': 'edm',
+        'description': 'Driving techno groove',
+        'kick': [0, 4, 8, 12],
+        'clap': [4, 12],
+        'snare': [4, 12],
+        'hihat': [0, 2, 4, 6, 8, 10, 12, 14],
+        'swing': 0
+    },
+    'edm_dubstep': {
+        'name': 'Dubstep Half-Time',
+        'genre': 'edm',
+        'description': 'Heavy half-time dubstep',
+        'kick': [0],
+        'snare': [8],
+        'hihat': [0, 2, 4, 6, 8, 10, 12, 14],
+        'swing': 0
+    },
+
+    # === AFRO HOUSE PATTERNS ===
+    'afro_foundation': {
+        'name': 'Afro Foundation',
+        'genre': 'afro_house',
+        'description': 'Basic Afro house groove',
+        'kick': [0, 8],           # Beats 1, 3
+        'perc': [0, 2, 4, 6, 8, 10, 12, 14],  # Shaker on 8ths
+        'swing': 60
+    },
+    'afro_minimal': {
+        'name': 'Minimal Afro',
+        'genre': 'afro_house',
+        'description': 'Stripped down Afro groove',
+        'kick': [0, 8],
+        'perc': [0, 2, 4, 6, 8, 10, 12, 14],
+        'swing': 58
+    },
+
+    # === TRAP / HIP-HOP PATTERNS ===
+    'trap_basic': {
+        'name': 'Trap Beat',
+        'genre': 'trap',
+        'description': 'Modern trap pattern',
+        'kick': [0, 10],          # Beat 1, before beat 4
+        'snare': [8],             # Beat 3 (half-time)
+        'hihat': list(range(16)), # Every 16th
+        'swing': 0
+    },
+    'trap_rolling': {
+        'name': 'Trap Rolling Hi-Hats',
+        'genre': 'trap',
+        'description': 'Trap with triplet hi-hats',
+        'kick': [0, 6, 10],
+        'snare': [8],
+        'hihat': list(range(16)),
+        'swing': 0
+    },
+    'hiphop_boom_bap': {
+        'name': 'Boom Bap',
+        'genre': 'hip_hop',
+        'description': 'Classic hip-hop boom bap',
+        'kick': [0, 5, 8, 10],    # Syncopated
+        'snare': [4, 12],
+        'hihat': [0, 2, 4, 6, 8, 10, 12, 14],
+        'swing': 55
+    },
+
+    # === K-POP PATTERNS ===
+    'kpop_chorus': {
+        'name': 'K-Pop Explosive Chorus',
+        'genre': 'kpop',
+        'description': 'High-energy K-pop chorus',
+        'kick': [0, 4, 8, 12],
+        'snare': [4, 12],
+        'clap': [4, 12],
+        'hihat': [0, 2, 4, 6, 8, 10, 12, 14],
+        'swing': 50
+    },
+    'kpop_verse': {
+        'name': 'K-Pop Trap Verse',
+        'genre': 'kpop',
+        'description': 'Trap-influenced K-pop verse',
+        'kick': [0, 11],
+        'snare': [8],
+        'hihat': list(range(16)),
+        'swing': 0
+    },
+
+    # === SIMPLE 2-LINE PATTERNS (for partial detection) ===
+    'simple_kick_snare': {
+        'name': 'Basic Kick-Snare',
+        'genre': 'general',
+        'description': 'Simple kick and snare backbeat',
+        'kick': [0, 8],
+        'snare': [4, 12],
+        'swing': 50
+    },
+    'simple_kick_clap': {
+        'name': 'Basic Kick-Clap',
+        'genre': 'general',
+        'description': 'Simple kick and clap',
+        'kick': [0, 4, 8, 12],
+        'clap': [4, 12],
+        'swing': 0
+    },
+    'simple_kick_hihat': {
+        'name': 'Kick with Hi-Hats',
+        'genre': 'general',
+        'description': 'Kick on beats with 8th note hi-hats',
+        'kick': [0, 8],
+        'hihat': [0, 2, 4, 6, 8, 10, 12, 14],
+        'swing': 50
+    }
+}
+
+
+class PatternMatchRequest(BaseModel):
+    """Request to match detected hits against known patterns"""
+    hits: List[Dict[str, Any]]
+    bpm: float
+    downbeat_offset: float
+    time_signature: int = 4
+
+
+@app.post('/match-pattern')
+async def match_pattern(request: PatternMatchRequest):
+    """
+    Match detected drum hits against known patterns from Knowledge Lab.
+
+    Optimized for partial patterns (2-line detection).
+    Returns similarity scores, best match, and suggestions.
+    """
+    beat_duration = 60.0 / request.bpm
+    bar_duration = beat_duration * request.time_signature
+    grid_duration = beat_duration / 4  # 16th note duration
+
+    # Convert hits to grid positions (0-15 per bar)
+    detected_grids = {
+        'kick': set(),
+        'snare': set(),
+        'hihat': set(),
+        'clap': set(),
+        'tom': set(),
+        'perc': set()
+    }
+
+    for hit in request.hits:
+        hit_time = hit.get('time', 0)
+        hit_type = hit.get('type', 'perc')
+
+        # Calculate position in bar
+        rel_time = hit_time - request.downbeat_offset
+        if rel_time < 0:
+            rel_time = 0
+        bar_position = rel_time % bar_duration
+        grid_step = int(round(bar_position / grid_duration)) % 16
+
+        if hit_type in detected_grids:
+            detected_grids[hit_type].add(grid_step)
+
+    # Find which drum types were detected
+    detected_types = [k for k, v in detected_grids.items() if len(v) > 0]
+    logger.info(f'Detected drum types: {detected_types}')
+    logger.info(f'Detected grids: {detected_grids}')
+
+    # Compare against known patterns
+    results = []
+    for pattern_id, pattern in KNOWN_PATTERNS.items():
+        scores = []
+        matches_detail = {}
+        missing_drums = []
+
+        # Get drum types in this pattern
+        pattern_drums = [k for k in ['kick', 'snare', 'hihat', 'clap', 'tom', 'perc']
+                        if k in pattern and isinstance(pattern[k], list)]
+
+        # Calculate score only for drum types that are in BOTH detected AND pattern
+        common_types = set(detected_types) & set(pattern_drums)
+
+        if len(common_types) == 0:
+            # No common drum types, skip this pattern
+            continue
+
+        for drum_type in common_types:
+            expected = set(pattern[drum_type])
+            detected = detected_grids.get(drum_type, set())
+
+            if len(expected) > 0 and len(detected) > 0:
+                # Calculate similarity using F1-like score
+                # This is more forgiving than Jaccard for partial matches
+                true_positives = len(expected & detected)
+                precision = true_positives / len(detected) if len(detected) > 0 else 0
+                recall = true_positives / len(expected) if len(expected) > 0 else 0
+
+                if precision + recall > 0:
+                    f1_score = 2 * (precision * recall) / (precision + recall)
+                else:
+                    f1_score = 0
+
+                # Weight by importance
+                weight = {'kick': 3.0, 'snare': 2.5, 'hihat': 1.0, 'clap': 2.5, 'tom': 1.5, 'perc': 1.0}.get(drum_type, 1)
+                scores.append(f1_score * weight)
+
+                matches_detail[drum_type] = {
+                    'expected': list(expected),
+                    'detected': list(detected),
+                    'matched': list(expected & detected),
+                    'score': round(f1_score * 100, 1)
+                }
+
+        # Calculate overall score
+        if len(scores) > 0:
+            overall_score = sum(scores) / len(scores)
+        else:
+            overall_score = 0
+
+        # Bonus for matching more drum types
+        coverage_bonus = len(common_types) / max(len(detected_types), 1) * 0.2
+        overall_score = min(1.0, overall_score + coverage_bonus)
+
+        # Find missing drums from pattern
+        for drum_type in pattern_drums:
+            if drum_type not in detected_types and drum_type in pattern:
+                missing_drums.append({
+                    'type': drum_type,
+                    'expected_positions': pattern[drum_type]
+                })
+
+        results.append({
+            'pattern_id': pattern_id,
+            'pattern_name': pattern['name'],
+            'genre': pattern.get('genre', 'unknown'),
+            'description': pattern.get('description', ''),
+            'score': round(overall_score * 100, 1),
+            'matches': matches_detail,
+            'missing_drums': missing_drums,
+            'suggested_swing': pattern.get('swing', 50)
+        })
+
+    # Sort by score
+    results.sort(key=lambda x: x['score'], reverse=True)
+
+    # Get top 5 matches
+    top_matches = results[:5]
+
+    # Generate suggestions based on best match
+    suggestions = []
+    if top_matches:
+        best = top_matches[0]
+        if best['score'] < 50:
+            suggestions.append('Detection confidence is low. Try using the Fix Grid panel to adjust BPM and downbeat.')
+        if best['missing_drums']:
+            missing_names = [d['type'] for d in best['missing_drums'][:2]]
+            suggestions.append(f"Pattern suggests adding: {', '.join(missing_names)}")
+        if abs(best['suggested_swing'] - 50) > 5:
+            suggestions.append(f"This pattern typically uses {best['suggested_swing']}% swing")
+
+    return {
+        'matches': top_matches,
+        'best_match': top_matches[0] if top_matches else None,
+        'detected_pattern': {k: sorted(list(v)) for k, v in detected_grids.items() if v},
+        'detected_types': detected_types,
+        'suggestions': suggestions
+    }
+
+
+# =============================================================================
+# Pattern-Based Quiet Hit Prediction
+# =============================================================================
+
+@app.post('/predict-quiet-hits')
+async def predict_quiet_hits(
+    file: UploadFile = File(...),
+    hits: str = Form(...),
+    bpm: float = Form(...),
+    downbeat_offset: float = Form(0.0),
+    audio_duration: float = Form(...),
+    time_signature: int = Form(4),
+    start_bar: Optional[int] = Form(None),
+    energy_multiplier: float = Form(0.5)
+):
+    """
+    Pattern-based prediction for finding quiet percussion hits.
+    Uses FREQUENCY-FILTERED detection for each drum type:
+    - Kick: Low-pass 20-250Hz
+    - Snare: Band-pass 150-2000Hz
+    - Hi-hat: High-pass 5000-15000Hz
+    - Perc: Band-pass 2000-8000Hz (wood blocks, claves, etc.)
+    """
+    # Parse hits from JSON string
+    import json
+    from scipy.signal import butter, sosfilt
+
+    hits_list = json.loads(hits)
+
+    logger.info(f'=== Frequency-Filtered Quiet Hit Prediction ===')
+    logger.info(f'BPM: {bpm}, Duration: {audio_duration}s')
+    logger.info(f'Existing hits: {len(hits_list)}')
+    logger.info(f'Start bar: {start_bar}, Energy multiplier: {energy_multiplier}')
+
+    # Save uploaded file
+    temp_path = f'/tmp/quiet_predict_{file.filename}'
+    try:
+        with open(temp_path, 'wb') as f:
+            content = await file.read()
+            f.write(content)
+
+        # Load audio
+        y, sr = librosa.load(temp_path, sr=44100, mono=True)
+
+        # =====================================================
+        # Create frequency-filtered versions for each drum type
+        # =====================================================
+        def bandpass_filter(data, lowcut, highcut, fs, order=4):
+            """Safe bandpass filter"""
+            nyq = 0.5 * fs
+            low = max(lowcut / nyq, 0.01)
+            high = min(highcut / nyq, 0.99)
+            if low >= high:
+                return data
+            try:
+                sos = butter(order, [low, high], btype='band', output='sos')
+                filtered = sosfilt(sos, data)
+                if not np.isfinite(filtered).all():
+                    return data
+                return filtered
+            except:
+                return data
+
+        # Frequency bands for each drum type
+        DRUM_FILTERS = {
+            'kick': (20, 250),      # Low frequencies for kick
+            'snare': (150, 2000),   # Mid frequencies for snare body
+            'hihat': (5000, 15000), # High frequencies for cymbals
+            'clap': (1000, 4000),   # Upper-mids for claps
+            'tom': (80, 500),       # Low-mids for toms
+            'perc': (2000, 8000),   # Mid-highs for wood blocks, claves, etc.
+        }
+
+        filtered_audio = {}
+        for drum_type, (low, high) in DRUM_FILTERS.items():
+            filtered_audio[drum_type] = bandpass_filter(y, low, min(high, sr/2 - 100), sr)
+            logger.info(f'  Created {drum_type} filter: {low}-{high}Hz')
+
+        # Calculate timing
+        beat_duration = 60.0 / bpm
+        bar_duration = beat_duration * time_signature
+        grid_duration = beat_duration / 4  # 16th note
+        total_bars = int(audio_duration / bar_duration)
+
+        # First, match existing hits to patterns
+        match_request = PatternMatchRequest(
+            hits=hits_list,
+            bpm=bpm,
+            downbeat_offset=downbeat_offset,
+            time_signature=time_signature
+        )
+        pattern_result = await match_pattern(match_request)
+
+        best_match = pattern_result.get('best_match')
+        detected_grids = pattern_result.get('detected_pattern', {})
+
+        # Get expected positions for ALL drum types from pattern
+        if not best_match:
+            logger.warning('No pattern match found, using generic patterns')
+            expected_positions = {
+                'kick': [0, 8],                      # Beats 1, 3
+                'snare': [4, 12],                    # Beats 2, 4
+                'hihat': [0, 2, 4, 6, 8, 10, 12, 14], # 8th notes
+                'perc': [0, 2, 4, 6, 8, 10, 12, 14],  # 8th notes
+            }
+        else:
+            logger.info(f'Best pattern match: {best_match["pattern_name"]} ({best_match["score"]}%)')
+            pattern = KNOWN_PATTERNS.get(best_match['pattern_id'], {})
+            expected_positions = {
+                'kick': pattern.get('kick', [0, 8]),
+                'snare': pattern.get('snare', [4, 12]),
+                'hihat': pattern.get('hihat', [0, 2, 4, 6, 8, 10, 12, 14]),
+                'clap': pattern.get('clap', []),
+                'tom': pattern.get('tom', []),
+                'perc': pattern.get('perc', [0, 2, 4, 6, 8, 10, 12, 14]),
+            }
+
+        # Build set of existing hit positions per drum type
+        existing_by_type = {dtype: set() for dtype in DRUM_FILTERS.keys()}
+        existing_times = set()
+        for hit in hits_list:
+            hit_time = round(hit.get('time', 0), 3)
+            hit_type = hit.get('type', 'perc')
+            existing_times.add(hit_time)
+            if hit_type in existing_by_type:
+                existing_by_type[hit_type].add(hit_time)
+
+        # Calculate which bars to scan
+        start_bar_idx = start_bar - 1 if start_bar else 0
+
+        # =====================================================
+        # FREQUENCY-FILTERED DETECTION FOR EACH DRUM TYPE
+        # =====================================================
+        found_quiet_hits = []
+        window_samples = int(sr * 0.06)  # 60ms window
+
+        def get_window_energy(audio, time_sec, sr, window_samples):
+            """Get RMS energy in a window around the given time"""
+            center_sample = int(time_sec * sr)
+            start = max(0, center_sample - window_samples // 2)
+            end = min(len(audio), center_sample + window_samples // 2)
+            if end <= start:
+                return 0.0
+            window = audio[start:end]
+            return float(np.sqrt(np.mean(window ** 2)))
+
+        # Energy thresholds for each drum type (adjusted for filtered signal)
+        ENERGY_THRESHOLDS = {
+            'kick': 0.008 * energy_multiplier,
+            'snare': 0.006 * energy_multiplier,
+            'hihat': 0.004 * energy_multiplier,
+            'clap': 0.005 * energy_multiplier,
+            'tom': 0.006 * energy_multiplier,
+            'perc': 0.003 * energy_multiplier,  # Very sensitive for quiet perc
+        }
+
+        logger.info(f'Scanning bars {start_bar_idx + 1} to {total_bars} for quiet hits...')
+
+        # Scan each drum type separately using its filtered audio
+        for drum_type, positions in expected_positions.items():
+            if not positions or drum_type not in filtered_audio:
+                continue
+
+            filtered_y = filtered_audio[drum_type]
+            threshold = ENERGY_THRESHOLDS.get(drum_type, 0.005)
+            existing_for_type = existing_by_type.get(drum_type, set())
+
+            logger.info(f'  Scanning {drum_type}: {len(positions)} positions/bar, threshold={threshold:.4f}')
+            hits_found = 0
+
+            for bar_idx in range(start_bar_idx, total_bars):
+                bar_start_time = downbeat_offset + (bar_idx * bar_duration)
+
+                for grid_pos in positions:
+                    hit_time = bar_start_time + (grid_pos * grid_duration)
+
+                    if hit_time < 0 or hit_time >= audio_duration:
+                        continue
+
+                    # Check if we already have a hit of THIS TYPE near this time
+                    has_nearby_hit = any(
+                        abs(existing_time - hit_time) < grid_duration * 0.4
+                        for existing_time in existing_for_type
+                    )
+
+                    if has_nearby_hit:
+                        continue
+
+                    # Check energy in the FILTERED audio
+                    energy = get_window_energy(filtered_y, hit_time, sr, window_samples)
+
+                    if energy > threshold:
+                        # Also check the full mix to get better classification
+                        features = extract_hit_features(y, sr, hit_time, window_ms=60)
+                        _, confidence = classify_hit_rules(features)
+
+                        # Boost confidence for hits found in filtered band
+                        confidence = max(confidence, 0.5)
+
+                        found_quiet_hits.append({
+                            'time': round(hit_time, 4),
+                            'type': drum_type,
+                            'confidence': round(confidence, 3),
+                            'bar': bar_idx + 1,
+                            'grid_position': grid_pos,
+                            'source': f'filtered_{drum_type}',
+                            'energy': round(energy, 5),
+                            'filter_band': f'{DRUM_FILTERS[drum_type][0]}-{DRUM_FILTERS[drum_type][1]}Hz'
+                        })
+                        hits_found += 1
+
+                        # Add to existing to avoid duplicates
+                        existing_for_type.add(round(hit_time, 3))
+
+            if hits_found > 0:
+                logger.info(f'    Found {hits_found} quiet {drum_type} hits')
+
+        logger.info(f'Total found: {len(found_quiet_hits)} quiet hits from filtered detection')
+
+        # =====================================================
+        # Additional: Low-energy onset scan on PERC band only
+        # =====================================================
+        additional_onsets = []
+        if start_bar and 'perc' in filtered_audio:
+            scan_start = downbeat_offset + ((start_bar - 1) * bar_duration)
+            scan_end = audio_duration
+
+            # Use perc-filtered audio for onset detection
+            perc_y = filtered_audio['perc']
+            onset_env = librosa.onset.onset_strength(y=perc_y, sr=sr)
+            onset_frames = librosa.onset.onset_detect(
+                onset_envelope=onset_env, sr=sr,
+                pre_max=3, post_max=3, pre_avg=5, post_avg=5,
+                delta=0.03 * energy_multiplier,  # Very low threshold
+                wait=int(sr * 0.03 / 512)
+            )
+            onset_times = librosa.frames_to_time(onset_frames, sr=sr)
+
+            logger.info(f'  Perc band onset scan found {len(onset_times)} candidates')
+
+            # Filter to our time range and exclude existing hits
+            for onset_time in onset_times:
+                if onset_time < scan_start or onset_time >= scan_end:
+                    continue
+
+                # Check if already detected (in any type)
+                is_duplicate = any(abs(t - onset_time) < 0.05 for t in existing_times)
+
+                # Check if already in found_quiet_hits
+                if not is_duplicate:
+                    is_duplicate = any(abs(qh['time'] - onset_time) < 0.05 for qh in found_quiet_hits)
+
+                if not is_duplicate:
+                    energy = get_window_energy(perc_y, onset_time, sr, window_samples)
+                    if energy < ENERGY_THRESHOLDS['perc']:
+                        continue
+
+                    bar_num = int((onset_time - downbeat_offset) / bar_duration) + 1
+                    grid_pos = int(((onset_time - downbeat_offset) % bar_duration) / grid_duration) % 16
+
+                    additional_onsets.append({
+                        'time': round(onset_time, 4),
+                        'type': 'perc',
+                        'confidence': 0.5,  # Default confidence for onset-detected hits
+                        'bar': bar_num,
+                        'grid_position': grid_pos,
+                        'source': 'perc_band_onset',
+                        'energy': round(energy, 5),
+                        'filter_band': f'{DRUM_FILTERS["perc"][0]}-{DRUM_FILTERS["perc"][1]}Hz'
+                    })
+
+            logger.info(f'Found {len(additional_onsets)} additional onsets from low-threshold scan')
+
+        # Combine all new hits
+        all_new_hits = found_quiet_hits + additional_onsets
+
+        # Sort by time
+        all_new_hits.sort(key=lambda x: x['time'])
+
+        # Calculate total expected positions scanned
+        total_positions_scanned = sum(
+            len(positions) * (total_bars - start_bar_idx)
+            for positions in expected_positions.values()
+            if positions
+        )
+
+        return {
+            'success': True,
+            'pattern_match': best_match,
+            'positions_scanned': total_positions_scanned,
+            'found_quiet_hits': found_quiet_hits,
+            'additional_onsets': additional_onsets,
+            'all_new_hits': all_new_hits,
+            'total_new_hits': len(all_new_hits),
+            'filter_bands': DRUM_FILTERS,
+            'scan_config': {
+                'start_bar': start_bar,
+                'energy_multiplier': energy_multiplier,
+                'total_bars': total_bars,
+                'bars_scanned': total_bars - start_bar_idx
+            }
+        }
+
+    except Exception as e:
+        logger.error(f'Error in quiet hit prediction: {e}')
+        import traceback
+        traceback.print_exc()
+        return {
+            'success': False,
+            'error': str(e)
+        }
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+# =============================================================================
+# Main
+# =============================================================================
+
+if __name__ == '__main__':
+    logger.info(f'Starting Rhythm Analyzer on port {PORT}')
+    logger.info(f'madmom available: {MADMOM_AVAILABLE}')
+    logger.info(f'sklearn available: {SKLEARN_AVAILABLE}')
+    logger.info(f'Classifier loaded: {classifier is not None}')
+
+    uvicorn.run(
+        app,
+        host=HOST,
+        port=PORT,
+        log_level='info'
+    )

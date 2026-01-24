@@ -748,6 +748,47 @@
   transform: scale(1.05);
 }
 
+/* Synced Bar Grid with Playhead */
+.bar-grid.synced {
+  position: relative;
+}
+
+.bar.compact.current {
+  border: 2px solid #e94560;
+  box-shadow: 0 0 10px rgba(233, 69, 96, 0.4);
+}
+
+.bar.compact.current .bar-number {
+  color: #e94560;
+  font-weight: bold;
+}
+
+.bar-chord {
+  position: relative;
+  overflow: hidden;
+}
+
+.bar-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #e94560;
+  box-shadow: 0 0 8px #e94560;
+  z-index: 10;
+  transition: left 0.05s linear;
+}
+
+.grid-position-info {
+  grid-column: 1 / -1;
+  text-align: center;
+  font-size: 0.7rem;
+  color: #888;
+  padding-top: 0.5rem;
+  border-top: 1px solid #1a1a2e;
+  font-family: monospace;
+}
+
 /* Recent Changes */
 .recent-changes {
   display: flex;

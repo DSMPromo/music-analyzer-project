@@ -426,53 +426,114 @@ function ChordDetector({
     }
   }, [autoDetectVoicing, currentChord, chromagramByOctave, detectVoicingFromAudio]);
 
-  // Group consecutive same chords and organize into bars
+  // Calculate bar/beat from timestamp using tempo
+  const getBarBeatFromTime = useCallback((timestampMs) => {
+    if (!tempo) return { bar: 0, beat: 0 };
+    const beatDurationMs = 60000 / tempo;
+    const totalBeats = timestampMs / beatDurationMs;
+    const bar = Math.floor(totalBeats / beatsPerBar);
+    const beat = Math.floor(totalBeats % beatsPerBar);
+    return { bar, beat };
+  }, [tempo, beatsPerBar]);
+
+  // Current bar/beat position from playhead
+  const currentBarBeat = useMemo(() => {
+    return getBarBeatFromTime(currentTimeMs || 0);
+  }, [currentTimeMs, getBarBeatFromTime]);
+
+  // Group consecutive same chords with proper timestamps
   const groupedChords = useMemo(() => {
     if (chordHistory.length === 0) return [];
 
     const groups = [];
-    let currentGroup = { chord: chordHistory[0]?.symbol, count: 1, startIndex: 0 };
+    let currentGroup = {
+      chord: chordHistory[0]?.symbol,
+      count: 1,
+      startTime: chordHistory[0]?.timestamp || 0,
+      startIndex: 0
+    };
 
     for (let i = 1; i < chordHistory.length; i++) {
       if (chordHistory[i].symbol === currentGroup.chord) {
         currentGroup.count++;
       } else {
+        currentGroup.endTime = chordHistory[i]?.timestamp || currentGroup.startTime;
         groups.push(currentGroup);
-        currentGroup = { chord: chordHistory[i].symbol, count: 1, startIndex: i };
+        currentGroup = {
+          chord: chordHistory[i].symbol,
+          count: 1,
+          startTime: chordHistory[i]?.timestamp || 0,
+          startIndex: i
+        };
       }
     }
+    currentGroup.endTime = currentGroup.startTime + 1000; // Assume 1 second for last chord
     groups.push(currentGroup);
 
     return groups;
   }, [chordHistory]);
 
-  // Create bar structure based on time signature
+  // Create bar structure based on tempo and timestamps
   const bars = useMemo(() => {
-    if (groupedChords.length === 0) return [];
+    if (!tempo || chordHistory.length === 0) return [];
 
+    const beatDurationMs = 60000 / tempo;
+    const barDurationMs = beatDurationMs * beatsPerBar;
+
+    // Find time range from chord history
+    const firstTime = chordHistory[0]?.timestamp || 0;
+    const lastTime = chordHistory[chordHistory.length - 1]?.timestamp || firstTime;
+
+    // Calculate total bars needed (at least 1, cap at 16 for display)
+    const totalBars = Math.min(16, Math.max(1, Math.ceil((lastTime - firstTime) / barDurationMs) + 1));
+
+    // Create bar array
     const barArray = [];
-    let beatIndex = 0;
+    for (let barIdx = 0; barIdx < totalBars; barIdx++) {
+      const barStartMs = firstTime + (barIdx * barDurationMs);
+      const barEndMs = barStartMs + barDurationMs;
 
-    groupedChords.forEach((group) => {
-      // Each group represents roughly a beat or more
-      const beats = Math.max(1, Math.round(group.count / 4)); // Normalize to beats
+      // Find chords that fall within this bar
+      const barBeats = Array(beatsPerBar).fill(null);
 
-      for (let b = 0; b < beats; b++) {
-        const barNum = Math.floor(beatIndex / beatsPerBar);
-        const beatInBar = beatIndex % beatsPerBar;
-
-        if (!barArray[barNum]) {
-          barArray[barNum] = Array(beatsPerBar).fill(null);
+      chordHistory.forEach(chord => {
+        const chordTime = chord.timestamp || 0;
+        if (chordTime >= barStartMs && chordTime < barEndMs) {
+          const beatInBar = Math.floor((chordTime - barStartMs) / beatDurationMs);
+          if (beatInBar >= 0 && beatInBar < beatsPerBar) {
+            barBeats[beatInBar] = chord.symbol;
+          }
         }
+      });
 
-        barArray[barNum][beatInBar] = group.chord;
-        beatIndex++;
-      }
-    });
+      barArray.push({
+        beats: barBeats,
+        startMs: barStartMs,
+        endMs: barEndMs,
+        barNumber: barIdx + 1
+      });
+    }
 
-    // Limit to last 8 bars for display
-    return barArray.slice(-8);
-  }, [groupedChords, beatsPerBar]);
+    // Return bars around current playhead (show 8 bars centered on current)
+    const currentBar = currentBarBeat.bar;
+    const startBar = Math.max(0, currentBar - 3);
+    const endBar = Math.min(barArray.length, startBar + 8);
+
+    return barArray.slice(startBar, endBar).map((bar, idx) => ({
+      ...bar,
+      isCurrentBar: (startBar + idx) === currentBar,
+      displayIndex: startBar + idx
+    }));
+  }, [chordHistory, tempo, beatsPerBar, currentBarBeat.bar]);
+
+  // Calculate playhead position within current bar (0-100%)
+  const playheadPosition = useMemo(() => {
+    if (!tempo || !currentTimeMs) return 0;
+    const beatDurationMs = 60000 / tempo;
+    const barDurationMs = beatDurationMs * beatsPerBar;
+    const positionInBar = (currentTimeMs % barDurationMs) / barDurationMs;
+    return positionInBar * 100;
+  }, [tempo, currentTimeMs, beatsPerBar]);
 
   // Get unique chords for legend
   const uniqueChords = useMemo(() => {
@@ -1038,17 +1099,18 @@ function ChordDetector({
       const barX = margin + (barIdx % 4) * barWidth;
       const rowY = barY + Math.floor(barIdx / 4) * (barHeight + 10);
 
-      // Bar number
+      // Bar number (use barNumber from structure or fallback to index)
       pdf.setFontSize(8);
       pdf.setTextColor(100, 100, 100);
-      pdf.text(`${barIdx + 1}`, barX + 2, rowY - 2);
+      pdf.text(`${bar.barNumber || barIdx + 1}`, barX + 2, rowY - 2);
 
       // Bar outline
       pdf.setDrawColor(180, 180, 180);
       pdf.rect(barX, rowY, barWidth, barHeight);
 
-      // Beats
-      bar.forEach((beat, beatIdx) => {
+      // Beats (use bar.beats if available, otherwise bar is the array)
+      const beats = bar.beats || bar;
+      beats.forEach((beat, beatIdx) => {
         const beatX = barX + beatIdx * beatWidth;
 
         if (beat) {
@@ -1331,29 +1393,45 @@ function ChordDetector({
             </div>
           )}
 
-          {/* Bar Grid - 1 chord per bar */}
-          <div className="bar-grid compact">
+          {/* Bar Grid - tempo-synced with playhead */}
+          <div className="bar-grid compact synced">
             {bars.map((bar, barIdx) => {
               // Get dominant chord for this bar (most common, or first non-null)
               const chordCounts = {};
-              bar.forEach(beat => {
+              bar.beats.forEach(beat => {
                 if (beat) chordCounts[beat] = (chordCounts[beat] || 0) + 1;
               });
               const dominantChord = Object.entries(chordCounts)
                 .sort((a, b) => b[1] - a[1])[0]?.[0] || null;
 
               return (
-                <div key={barIdx} className="bar compact">
-                  <span className="bar-number">{barIdx + 1}</span>
+                <div
+                  key={barIdx}
+                  className={`bar compact ${bar.isCurrentBar ? 'current' : ''}`}
+                >
+                  <span className="bar-number">{bar.barNumber || barIdx + 1}</span>
                   <div
                     className={`bar-chord ${dominantChord ? 'has-chord' : 'empty'}`}
                     style={{ backgroundColor: dominantChord ? getChordColor(dominantChord) : undefined }}
                   >
                     {dominantChord || '-'}
+                    {/* Playhead line for current bar */}
+                    {bar.isCurrentBar && isPlaying && (
+                      <div
+                        className="bar-playhead"
+                        style={{ left: `${playheadPosition}%` }}
+                      />
+                    )}
                   </div>
                 </div>
               );
             })}
+            {/* Show current position info */}
+            {tempo && (
+              <div className="grid-position-info">
+                Bar {currentBarBeat.bar + 1} | Beat {currentBarBeat.beat + 1}
+              </div>
+            )}
           </div>
 
           {/* Recent Changes */}

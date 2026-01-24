@@ -325,6 +325,712 @@ export const DEFAULT_INSTRUMENT_PRESETS = {
         highCut: 5000
       }
     }
+  },
+
+  // ============================================
+  // SERUM PRESETS
+  // ============================================
+
+  'serum_bass': {
+    name: 'Serum Bass',
+    category: 'bass',
+    description: 'Modern wavetable bass',
+    plugin: 'Serum',
+    settings: {
+      osc_a: { wavetable: 'Basic Shapes', position: 128, level: 100 },
+      osc_b: { wavetable: 'Analog_BD_Sin', position: 0, level: 80 },
+      sub: { level: -6, octave: -1 },
+      filter: { type: 'MG Low 24', cutoff: 200, resonance: 15, drive: 20 },
+      env_filter: { attack: 0, decay: 150, sustain: 30, amount: 50 },
+      unison: { voices: 3, detune: 0.15, blend: 0 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 30,
+        sub: { freq: 60, gain: 2 },
+        lowMid: { freq: 300, gain: -3, q: 2 },
+        highCut: 8000
+      },
+      compression: { threshold: -8, ratio: 4, attack: 20, release: 'slow' },
+      saturation: { drive: 25, mix: 40, type: 'tube' }
+    },
+    tips: [
+      'Use WT position automation for movement',
+      'Layer sub oscillator for low end weight',
+      'Multiband compress for consistent level',
+      'Sidechain to kick with fast attack'
+    ]
+  },
+
+  'serum_supersaw': {
+    name: 'Serum Supersaw',
+    category: 'synth',
+    description: 'Massive unison lead',
+    plugin: 'Serum',
+    settings: {
+      osc_a: { wavetable: 'Basic Shapes', position: 127, level: 100 },
+      unison: { voices: 7, detune: 0.25, blend: 50, mode: 'Super' },
+      filter: { type: 'MG Low 12', cutoff: 4000, resonance: 10 },
+      env_amp: { attack: 5, decay: 500, sustain: 80, release: 300 },
+      fx: { dimension: 30, hyper: 50 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 120,
+        scoop: { freq: 400, gain: -2, q: 1 },
+        presence: { freq: 3500, gain: 3, q: 0.8 },
+        air: { freq: 12000, gain: 2 }
+      },
+      compression: { threshold: -10, ratio: 3, attack: 10, release: 'fast' },
+      reverb: { type: 'hall', decay: 'long', mix: 35, preDelay: 'spacious' },
+      delay: { time: 'dottedEighth', feedback: 25, mix: 15 }
+    },
+    tips: [
+      'Automate filter cutoff for builds',
+      'Use Hyper/Dimension for width',
+      'Layer with sub for drops',
+      'Sidechain to kick for pumping'
+    ]
+  },
+
+  'serum_pluck': {
+    name: 'Serum Pluck',
+    category: 'synth',
+    description: 'Short percussive synth',
+    plugin: 'Serum',
+    settings: {
+      osc_a: { wavetable: 'Basic Shapes', position: 64, level: 100 },
+      osc_b: { wavetable: 'Analog_Saw_Bri', position: 0, level: 70 },
+      filter: { type: 'MG Low 18', cutoff: 6000, resonance: 20, keytrack: 50 },
+      env_amp: { attack: 0, decay: 200, sustain: 0, release: 150 },
+      env_filter: { attack: 0, decay: 150, sustain: 0, amount: 60 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 100,
+        mid: { freq: 800, gain: 2, q: 1.5 },
+        presence: { freq: 5000, gain: 3, q: 0.7 }
+      },
+      compression: { threshold: -12, ratio: 3, attack: 5, release: 'fast' },
+      reverb: { type: 'plate', decay: 'medium', mix: 30 },
+      delay: { time: 'sixteenth', feedback: 30, mix: 20 }
+    },
+    tips: [
+      'Short decay for rhythmic patterns',
+      'Longer decay for melodic lines',
+      'Add reverb for depth',
+      'Sequence 16th note patterns'
+    ]
+  },
+
+  'serum_pad': {
+    name: 'Serum Pad',
+    category: 'synth',
+    description: 'Lush atmospheric pad',
+    plugin: 'Serum',
+    settings: {
+      osc_a: { wavetable: 'Analog_SawRound', position: 40, level: 80 },
+      osc_b: { wavetable: 'Digital_One', position: 100, level: 60 },
+      unison: { voices: 4, detune: 0.20, blend: 70 },
+      filter: { type: 'MG Low 12', cutoff: 2000, resonance: 5 },
+      env_amp: { attack: 800, decay: 2000, sustain: 70, release: 1500 },
+      lfo_1: { rate: 'quarter', amount: 15, destination: 'filter_cutoff' }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 150,
+        lowMid: { freq: 300, gain: -3, q: 1 },
+        highShelf: { freq: 8000, gain: 2 }
+      },
+      compression: { threshold: -15, ratio: 2, attack: 50, release: 'slow' },
+      reverb: { type: 'hall', decay: 'huge', mix: 50, preDelay: 'spacious' },
+      chorus: { rate: 0.3, depth: 40, mix: 25 }
+    },
+    tips: [
+      'Long attack for swells',
+      'LFO on filter for movement',
+      'Layer multiple pads at different octaves',
+      'Use reverb generously'
+    ]
+  },
+
+  'serum_growl': {
+    name: 'Serum Growl Bass',
+    category: 'bass',
+    description: 'Aggressive dubstep bass',
+    plugin: 'Serum',
+    settings: {
+      osc_a: { wavetable: 'Monster_1', position: 128, level: 100 },
+      osc_b: { wavetable: 'Wobble', position: 64, level: 80 },
+      filter: { type: 'MG Low 24', cutoff: 800, resonance: 40, drive: 50 },
+      lfo_1: { rate: 'eighth', amount: 80, destination: 'filter_cutoff', shape: 'saw_down' },
+      env_filter: { attack: 0, decay: 100, sustain: 50, amount: 40 },
+      fx: { distortion: 40, multiband: 60 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 35,
+        sub: { freq: 55, gain: 3 },
+        mid: { freq: 600, gain: 4, q: 2 },
+        highCut: 12000
+      },
+      compression: { threshold: -6, ratio: 6, attack: 5, release: 'fast' },
+      saturation: { drive: 50, mix: 60, type: 'hard' },
+      multiband: { low: -2, mid: 3, high: 0 }
+    },
+    tips: [
+      'Automate LFO rate for variety',
+      'Use resampling for complexity',
+      'Layer with clean sub',
+      'Multiband compress heavily'
+    ]
+  },
+
+  // ============================================
+  // MASSIVE PRESETS
+  // ============================================
+
+  'massive_bass': {
+    name: 'Massive Bass',
+    category: 'bass',
+    description: 'Classic Massive reese bass',
+    plugin: 'Massive',
+    settings: {
+      osc_1: { wavetable: 'Rough Math I', position: 50, level: 100 },
+      osc_2: { wavetable: 'Rough Math I', position: 60, level: 80, pitch: -12 },
+      filter_1: { type: 'Lowpass 4', cutoff: 400, resonance: 30 },
+      modulation: { lfo_rate: 'half', lfo_amount: 40, destination: 'osc_position' },
+      voicing: { unison: 2, pitch_spread: 0.10 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 30,
+        sub: { freq: 50, gain: 2 },
+        lowMid: { freq: 250, gain: -4, q: 2 },
+        mid: { freq: 700, gain: 3, q: 1.5 }
+      },
+      compression: { threshold: -10, ratio: 4, attack: 15, release: 'slow' },
+      saturation: { drive: 30, mix: 40 }
+    },
+    tips: [
+      'Modulate wavetable position for movement',
+      'Use performer for complex automation',
+      'Layer with sine sub',
+      'Parallel distortion for grit'
+    ]
+  },
+
+  'massive_lead': {
+    name: 'Massive Lead',
+    category: 'synth',
+    description: 'Cutting lead synth',
+    plugin: 'Massive',
+    settings: {
+      osc_1: { wavetable: 'Sqr-Sw I', position: 80, level: 100 },
+      osc_2: { wavetable: 'Chrome', position: 50, level: 60, pitch: 7 },
+      filter_1: { type: 'Lowpass 2', cutoff: 6000, resonance: 20 },
+      voicing: { unison: 4, pitch_spread: 0.15, pan_spread: 80 },
+      env_amp: { attack: 5, decay: 300, sustain: 70, release: 200 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 150,
+        presence: { freq: 3000, gain: 4, q: 1 },
+        air: { freq: 10000, gain: 2 }
+      },
+      compression: { threshold: -12, ratio: 3, attack: 8, release: 'musical' },
+      delay: { time: 'dottedEighth', feedback: 30, mix: 20 },
+      reverb: { type: 'plate', decay: 'medium', mix: 25 }
+    },
+    tips: [
+      'Use 5th interval on OSC2 for power',
+      'Automate filter for expression',
+      'Add pitch bend for leads',
+      'Layer octaves for hooks'
+    ]
+  },
+
+  'massive_wobble': {
+    name: 'Massive Wobble',
+    category: 'bass',
+    description: 'Classic dubstep wobble',
+    plugin: 'Massive',
+    settings: {
+      osc_1: { wavetable: 'Screamer', position: 64, level: 100 },
+      osc_2: { wavetable: 'Crusher', position: 30, level: 70 },
+      filter_1: { type: 'Lowpass 4', cutoff: 200, resonance: 50 },
+      lfo_5: { rate: 'eighth', sync: true, amount: 100, destination: 'filter_cutoff' },
+      insert_1: { type: 'Classic Tube', drive: 40 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 35,
+        sub: { freq: 55, gain: 3 },
+        scoop: { freq: 400, gain: -3, q: 1.5 },
+        presence: { freq: 2000, gain: 4, q: 1 }
+      },
+      compression: { threshold: -8, ratio: 5, attack: 5, release: 'fast' },
+      saturation: { drive: 40, mix: 50 }
+    },
+    tips: [
+      'Change LFO rate for half-time/double-time',
+      'Use stepper for rhythmic patterns',
+      'Automate LFO rate in drops',
+      'Layer with clean sub sine'
+    ]
+  },
+
+  'massive_pluck': {
+    name: 'Massive Pluck',
+    category: 'synth',
+    description: 'Punchy pluck synth',
+    plugin: 'Massive',
+    settings: {
+      osc_1: { wavetable: 'Sqr-Sw II', position: 100, level: 100 },
+      filter_1: { type: 'Lowpass 2', cutoff: 8000, resonance: 25 },
+      env_1: { attack: 0, decay: 120, sustain: 0, level: 80 },
+      env_amp: { attack: 0, decay: 180, sustain: 0, release: 100 },
+      voicing: { unison: 2, pitch_spread: 0.08 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 100,
+        mid: { freq: 1000, gain: 2, q: 1 },
+        presence: { freq: 4000, gain: 3, q: 0.8 }
+      },
+      compression: { threshold: -10, ratio: 3, attack: 3, release: 'fast' },
+      delay: { time: 'eighth', feedback: 35, mix: 25, pingPong: true },
+      reverb: { type: 'room', decay: 'short', mix: 20 }
+    },
+    tips: [
+      'Short decay for arps',
+      'Sequence 16th note patterns',
+      'Use velocity to decay amount',
+      'Add ping pong delay for width'
+    ]
+  },
+
+  // ============================================
+  // SYLENTH1 PRESETS
+  // ============================================
+
+  'sylenth_lead': {
+    name: 'Sylenth1 Lead',
+    category: 'synth',
+    description: 'Classic trance lead',
+    plugin: 'Sylenth1',
+    settings: {
+      osc_a1: { wave: 'Saw', voices: 4, detune: 3.50, phase: 'free' },
+      osc_a2: { wave: 'Saw', voices: 4, detune: 3.50, octave: 1 },
+      filter_a: { type: 'Lowpass', cutoff: 7.5, resonance: 4, keytrack: 64 },
+      env_amp: { attack: 0, decay: 5.0, sustain: 8.0, release: 4.0 },
+      env_filter: { attack: 0, decay: 4.0, sustain: 0, amount: 3.0 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 120,
+        scoop: { freq: 350, gain: -2, q: 1 },
+        presence: { freq: 3500, gain: 4, q: 0.7 },
+        air: { freq: 12000, gain: 2 }
+      },
+      compression: { threshold: -10, ratio: 3, attack: 8, release: 'fast' },
+      reverb: { type: 'hall', decay: 'long', mix: 35, preDelay: 'natural' },
+      delay: { time: 'dottedEighth', feedback: 25, mix: 15 }
+    },
+    tips: [
+      'Classic trance sound with 8 voices',
+      'Automate cutoff for builds',
+      'Layer with supersaws for drops',
+      'Use portamento for lead lines'
+    ]
+  },
+
+  'sylenth_supersaw': {
+    name: 'Sylenth1 Supersaw',
+    category: 'synth',
+    description: 'EDM supersaw stack',
+    plugin: 'Sylenth1',
+    settings: {
+      osc_a1: { wave: 'Saw', voices: 8, detune: 5.00, stereo: 10 },
+      osc_b1: { wave: 'Saw', voices: 8, detune: 5.00, stereo: 10, octave: -1 },
+      filter_a: { type: 'Lowpass', cutoff: 8.0, resonance: 2 },
+      filter_b: { type: 'Lowpass', cutoff: 8.0, resonance: 2 },
+      mix: { a: 80, b: 60 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 100,
+        low: { freq: 200, gain: -2, q: 1 },
+        presence: { freq: 4000, gain: 3, q: 0.6 },
+        air: { freq: 14000, gain: 2 }
+      },
+      compression: { threshold: -8, ratio: 4, attack: 5, release: 'fast' },
+      reverb: { type: 'hall', decay: 'long', mix: 40 },
+      delay: { time: 'eighth', feedback: 20, mix: 10 }
+    },
+    tips: [
+      '16 total voices for massive sound',
+      'Use both filter sections',
+      'Sidechain heavily to kick',
+      'Automate filter for drops'
+    ]
+  },
+
+  'sylenth_bass': {
+    name: 'Sylenth1 Bass',
+    category: 'bass',
+    description: 'Punchy synth bass',
+    plugin: 'Sylenth1',
+    settings: {
+      osc_a1: { wave: 'Saw', voices: 2, detune: 0.50, octave: -1 },
+      osc_a2: { wave: 'Square', voices: 1, octave: -2 },
+      filter_a: { type: 'Lowpass', cutoff: 3.5, resonance: 5, drive: 3 },
+      env_amp: { attack: 0, decay: 6.0, sustain: 6.0, release: 3.0 },
+      env_filter: { attack: 0, decay: 3.0, sustain: 2.0, amount: 4.0 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 30,
+        sub: { freq: 60, gain: 2 },
+        lowMid: { freq: 250, gain: -3, q: 2 },
+        highCut: 6000
+      },
+      compression: { threshold: -8, ratio: 4, attack: 15, release: 'slow' },
+      saturation: { drive: 25, mix: 35 }
+    },
+    tips: [
+      'Layer square sub for weight',
+      'Use filter envelope for pluck',
+      'Mono below 150Hz',
+      'Sidechain to kick'
+    ]
+  },
+
+  'sylenth_pluck': {
+    name: 'Sylenth1 Pluck',
+    category: 'synth',
+    description: 'Bright pluck synth',
+    plugin: 'Sylenth1',
+    settings: {
+      osc_a1: { wave: 'Saw', voices: 4, detune: 2.00 },
+      osc_a2: { wave: 'Pulse', voices: 2, detune: 1.50, pw: 30 },
+      filter_a: { type: 'Lowpass', cutoff: 10, resonance: 3 },
+      env_amp: { attack: 0, decay: 2.5, sustain: 0, release: 2.0 },
+      env_filter: { attack: 0, decay: 2.0, sustain: 0, amount: 5.0 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 120,
+        mid: { freq: 1200, gain: 2, q: 1 },
+        presence: { freq: 5000, gain: 3, q: 0.7 }
+      },
+      compression: { threshold: -12, ratio: 3, attack: 3, release: 'fast' },
+      delay: { time: 'sixteenth', feedback: 40, mix: 25, pingPong: true },
+      reverb: { type: 'plate', decay: 'medium', mix: 25 }
+    },
+    tips: [
+      'Great for arpeggios',
+      'Use velocity to filter cutoff',
+      'Layer with pads for fullness',
+      'Ping pong delay for width'
+    ]
+  },
+
+  'sylenth_pad': {
+    name: 'Sylenth1 Pad',
+    category: 'synth',
+    description: 'Warm analog-style pad',
+    plugin: 'Sylenth1',
+    settings: {
+      osc_a1: { wave: 'Saw', voices: 4, detune: 4.00 },
+      osc_b1: { wave: 'Triangle', voices: 2, detune: 2.00, octave: 1 },
+      filter_a: { type: 'Lowpass', cutoff: 5.0, resonance: 2 },
+      env_amp: { attack: 7.0, decay: 8.0, sustain: 7.0, release: 6.0 },
+      lfo_1: { wave: 'Sine', rate: 0.5, amount: 1.5, destination: 'cutoff' }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 150,
+        lowMid: { freq: 300, gain: -2, q: 1 },
+        presence: { freq: 3000, gain: 2, q: 0.8 },
+        air: { freq: 10000, gain: 2 }
+      },
+      compression: { threshold: -15, ratio: 2, attack: 50, release: 'slow' },
+      reverb: { type: 'hall', decay: 'huge', mix: 50, preDelay: 'spacious' },
+      chorus: { rate: 0.4, depth: 35, mix: 20 }
+    },
+    tips: [
+      'Slow LFO for movement',
+      'Long attack for swells',
+      'Use both parts for thickness',
+      'Heavy reverb works well'
+    ]
+  },
+
+  // ============================================
+  // MORE SYNTHS & INSTRUMENTS
+  // ============================================
+
+  'nexus_edm': {
+    name: 'Nexus EDM Lead',
+    category: 'synth',
+    description: 'Big room house lead',
+    plugin: 'Nexus',
+    settings: {
+      expansion: 'EDM',
+      layer: 'Lead 01',
+      filter: { cutoff: 80, resonance: 20 },
+      mod: { amount: 30, destination: 'cutoff' }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 120,
+        presence: { freq: 3500, gain: 4, q: 0.7 },
+        air: { freq: 12000, gain: 3 }
+      },
+      compression: { threshold: -10, ratio: 4, attack: 5, release: 'fast' },
+      reverb: { type: 'hall', decay: 'long', mix: 35 }
+    }
+  },
+
+  'omnisphere_pad': {
+    name: 'Omnisphere Pad',
+    category: 'synth',
+    description: 'Cinematic texture pad',
+    plugin: 'Omnisphere',
+    settings: {
+      layer_a: { source: 'Psychoacoustic', granular: true },
+      layer_b: { source: 'Analog', wave: 'Saw' },
+      filter: { type: 'Lowpass', cutoff: 60 },
+      fx: { reverb: 60, chorus: 30 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 100,
+        low: { freq: 200, gain: -3, q: 1 },
+        air: { freq: 10000, gain: 3 }
+      },
+      compression: { threshold: -18, ratio: 2, attack: 80, release: 'slow' },
+      reverb: { type: 'hall', decay: 'huge', mix: 55 }
+    }
+  },
+
+  'diva_analog': {
+    name: 'Diva Analog Lead',
+    category: 'synth',
+    description: 'Vintage analog emulation',
+    plugin: 'Diva',
+    settings: {
+      model: 'Jupe-8',
+      osc_1: { wave: 'Saw', level: 100 },
+      osc_2: { wave: 'Saw', level: 80, detune: 10 },
+      filter: { type: 'Ladder', cutoff: 70, resonance: 25, env_amount: 40 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 100,
+        mid: { freq: 800, gain: 2, q: 1 },
+        presence: { freq: 4000, gain: 3, q: 0.8 }
+      },
+      compression: { threshold: -12, ratio: 3, attack: 10, release: 'musical' },
+      delay: { time: 'dottedEighth', feedback: 25, mix: 20 },
+      chorus: { rate: 0.6, depth: 25, mix: 15 }
+    }
+  },
+
+  'vital_modern': {
+    name: 'Vital Modern Bass',
+    category: 'bass',
+    description: 'Modern wavetable bass',
+    plugin: 'Vital',
+    settings: {
+      osc_1: { wavetable: 'Init', spectral_morph: 'smear', position: 50 },
+      osc_2: { wavetable: 'Basic Shapes', position: 0, level: 60 },
+      filter: { type: 'Dirty', cutoff: 400, drive: 40 },
+      unison: { voices: 4, detune: 20 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 30,
+        sub: { freq: 55, gain: 2 },
+        mid: { freq: 500, gain: 3, q: 1.5 },
+        highCut: 10000
+      },
+      compression: { threshold: -8, ratio: 4, attack: 10, release: 'slow' },
+      saturation: { drive: 35, mix: 45 }
+    },
+    tips: [
+      'Free alternative to Serum',
+      'Use spectral morph for texture',
+      'Great for modern bass sounds',
+      'Layer with sub oscillator'
+    ]
+  },
+
+  'phase_plant_texture': {
+    name: 'Phase Plant Texture',
+    category: 'synth',
+    description: 'Complex modular texture',
+    plugin: 'Phase Plant',
+    settings: {
+      generator_1: { type: 'Wavetable', table: 'Harmonic' },
+      generator_2: { type: 'Sample', sample: 'Noise' },
+      generator_3: { type: 'Analog', wave: 'Saw' },
+      filter: { type: 'Ladder', cutoff: 50 },
+      modulators: 'Complex LFO routing'
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 80,
+        mid: { freq: 600, gain: -2, q: 1 },
+        air: { freq: 12000, gain: 3 }
+      },
+      compression: { threshold: -15, ratio: 2, attack: 30, release: 'slow' },
+      reverb: { type: 'hall', decay: 'long', mix: 40 }
+    }
+  },
+
+  'pigments_fm': {
+    name: 'Pigments FM Bass',
+    category: 'bass',
+    description: 'FM synthesis bass',
+    plugin: 'Pigments',
+    settings: {
+      engine_1: { type: 'Analog', wave: 'Sine' },
+      engine_2: { type: 'Wavetable', fm_from_1: 50 },
+      filter: { type: 'Multimode', cutoff: 800, drive: 30 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 35,
+        sub: { freq: 60, gain: 3 },
+        mid: { freq: 400, gain: -2, q: 2 },
+        presence: { freq: 2000, gain: 2, q: 1 }
+      },
+      compression: { threshold: -10, ratio: 4, attack: 15, release: 'slow' }
+    }
+  },
+
+  // ============================================
+  // HARDWARE EMULATIONS
+  // ============================================
+
+  'juno_106': {
+    name: 'Juno-106 Pad',
+    category: 'synth',
+    description: 'Classic 80s pad',
+    plugin: 'TAL-U-NO-LX / Juno emulation',
+    settings: {
+      dco: { saw: 100, pulse: 0, sub: 50, noise: 0 },
+      hpf: 1,
+      vcf: { freq: 60, res: 30, env: 40 },
+      vca: { env: true },
+      env: { attack: 50, decay: 60, sustain: 70, release: 60 },
+      chorus: 2
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 80,
+        warmth: { freq: 200, gain: 2, q: 0.8 },
+        presence: { freq: 3000, gain: 2, q: 1 }
+      },
+      compression: { threshold: -15, ratio: 2, attack: 40, release: 'slow' },
+      reverb: { type: 'plate', decay: 'long', mix: 35 }
+    },
+    tips: [
+      'Chorus is essential for Juno sound',
+      'Use HPF to clear low end',
+      'Classic for synthwave and house',
+      'Layer with modern basses'
+    ]
+  },
+
+  'minimoog': {
+    name: 'Minimoog Bass',
+    category: 'bass',
+    description: 'Classic analog bass',
+    plugin: 'Minimoog emulation',
+    settings: {
+      osc_1: { wave: 'Saw', octave: -1 },
+      osc_2: { wave: 'Square', octave: -2, detune: 3 },
+      osc_3: { wave: 'Triangle', octave: -2 },
+      filter: { cutoff: 40, emphasis: 30, contour: 50 },
+      loudness: { attack: 0, decay: 60, sustain: 80 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 30,
+        sub: { freq: 60, gain: 2 },
+        lowMid: { freq: 200, gain: -2, q: 2 },
+        presence: { freq: 1500, gain: 2, q: 1 }
+      },
+      compression: { threshold: -10, ratio: 4, attack: 20, release: 'slow' },
+      saturation: { drive: 20, mix: 30, type: 'tube' }
+    },
+    tips: [
+      'Three oscillators for thickness',
+      'Filter resonance adds character',
+      'Classic for funk and hip-hop',
+      'Use glide for slides'
+    ]
+  },
+
+  'dx7_epiano': {
+    name: 'DX7 E-Piano',
+    category: 'keys',
+    description: 'Classic FM electric piano',
+    plugin: 'Dexed / FM8',
+    settings: {
+      algorithm: 5,
+      operators: 'Classic E.Piano patch',
+      velocity_sensitivity: 70,
+      feedback: 5
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 60,
+        warmth: { freq: 250, gain: 2, q: 1 },
+        presence: { freq: 2500, gain: 3, q: 0.8 },
+        air: { freq: 8000, gain: 2 }
+      },
+      compression: { threshold: -15, ratio: 2.5, attack: 15, release: 'musical' },
+      chorus: { rate: 0.4, depth: 25, mix: 20 },
+      reverb: { type: 'plate', decay: 'medium', mix: 20 }
+    },
+    tips: [
+      'Velocity is crucial for dynamics',
+      'Classic 80s sound',
+      'Works great with chorus',
+      'Layer with real piano for depth'
+    ]
+  },
+
+  'prophet_5': {
+    name: 'Prophet-5 Brass',
+    category: 'synth',
+    description: 'Classic poly synth brass',
+    plugin: 'Prophet emulation',
+    settings: {
+      osc_a: { wave: 'Saw', level: 100 },
+      osc_b: { wave: 'Saw', level: 80, detune: 5, sync: false },
+      filter: { cutoff: 50, resonance: 15, env_amount: 60, keytrack: 50 },
+      env_filter: { attack: 0, decay: 40, sustain: 60, release: 30 }
+    },
+    mixSettings: {
+      eq: {
+        lowCut: 100,
+        mid: { freq: 800, gain: 2, q: 1 },
+        presence: { freq: 3000, gain: 3, q: 0.7 }
+      },
+      compression: { threshold: -12, ratio: 3, attack: 10, release: 'musical' },
+      reverb: { type: 'hall', decay: 'medium', mix: 25 }
+    },
+    tips: [
+      'Classic brass stabs',
+      'Filter envelope is key',
+      'Great for chord stabs',
+      'Use unison for leads'
+    ]
   }
 };
 
